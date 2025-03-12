@@ -1,0 +1,52 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --foreground-rgb: 255, 255, 255;
+  --background-start-rgb: 40, 44, 52;
+  --background-end-rgb: 40, 44, 52;
+}
+
+body {
+  color: rgb(var(--foreground-rgb));
+  background: linear-gradient(
+      to bottom,
+      transparent,
+      rgb(var(--background-end-rgb))
+    )
+    rgb(var(--background-start-rgb));
+}
+
+@layer components {
+  .btn-primary {
+    @apply bg-primary text-white py-3 px-5 rounded-md cursor-pointer hover:bg-opacity-90 disabled:bg-gray-500 disabled:cursor-not-allowed transition-colors;
+  }
+  
+  .btn-secondary {
+    @apply bg-secondary text-white py-3 px-5 rounded-md cursor-pointer hover:bg-opacity-90 transition-colors;
+  }
+  
+  .file-input {
+    @apply border border-gray-300 rounded-md w-full p-2 bg-white bg-opacity-10;
+  }
+  
+  .dropzone {
+    @apply border-2 border-dashed rounded-lg p-4 flex flex-col items-center justify-center cursor-pointer transition-colors duration-200;
+  }
+  
+  .dropzone-active {
+    @apply border-primary bg-primary bg-opacity-10;
+  }
+  
+  .dropzone-has-file {
+    @apply bg-opacity-5 bg-green-500;
+  }
+}
+
+/* Prevenir comportamiento de arrastrar en dispositivos móviles */
+@media (max-width: 768px) {
+  html, body {
+    overscroll-behavior-y: contain;
+  }
+}
