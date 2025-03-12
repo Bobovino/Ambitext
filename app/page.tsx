@@ -27,6 +27,7 @@ export default function Home() {
 
     // Generar un ID único para esta sesión de traducción
     const newSessionId = uuidv4()
+    console.log(`Iniciando traducción con sessionId: ${newSessionId}`);
     setSessionId(newSessionId)
     setShowProgress(true)
     setLoading(true)
@@ -36,20 +37,26 @@ export default function Home() {
       formData.append('pdfFile', file)
       formData.append('sessionId', newSessionId)
       
+      // Iniciar la petición de traducción
+      console.log("Enviando solicitud de traducción al servidor");
       const response = await fetch('/api/translate', {
         method: 'POST',
         body: formData,
       })
+      
+      console.log(`Respuesta recibida - status: ${response.status}`);
       
       if (response.ok) {
         const blob = await response.blob()
         const url = window.URL.createObjectURL(blob)
         setDownloadUrl(url)
       } else {
-        alert('Error al traducir el PDF')
+        const errorData = await response.json().catch(() => ({ error: 'Error desconocido' }));
+        console.error("Error en respuesta:", errorData);
+        alert(`Error al traducir el PDF: ${errorData.error || response.statusText}`);
       }
     } catch (error) {
-      console.error('Error:', error)
+      console.error('Error de conexión:', error)
       alert('Error al conectar con el servidor')
     } finally {
       setLoading(false)
@@ -58,6 +65,7 @@ export default function Home() {
   
   // Callback que se ejecuta cuando la traducción está completa
   const handleTranslationComplete = useCallback(() => {
+    console.log("Traducción completada, ocultando barra de progreso");
     setShowProgress(false)
   }, [])
 
@@ -81,9 +89,9 @@ export default function Home() {
   return (
     <main className="flex min-h-screen flex-col items-center justify-center p-6 bg-background">
       <div className="max-w-md w-full px-6 py-8 bg-white bg-opacity-5 rounded-xl shadow-xl">
-        <h1 className="text-3xl font-bold mb-2 text-center">PDF Traductor Alemán-Español</h1>
+        <h1 className="text-3xl font-bold mb-2 text-center">Traductor Alemán-Español</h1>
         <p className="text-gray-300 mb-6 text-center">
-          Sube un PDF en alemán y recibe otro con cada frase traducida al español
+          Sube un archivo en alemán y recibe un PDF con cada frase traducida al español
         </p>
         
         {/* Mostrar banner según el modo configurado */}
@@ -111,18 +119,21 @@ export default function Home() {
             <li>Procesamiento por frases en lugar de líneas</li>
             <li>Textos en colores diferentes para mejor lectura</li>
             <li>Seguimiento del progreso de la traducción en tiempo real</li>
-            <li>Ahora puedes arrastrar y soltar archivos PDF</li>
+            <li>Ahora puedes arrastrar y soltar archivos</li>
+            <li><span className="font-semibold text-green-400">¡NUEVO!</span> Soporte para archivos EPUB y MOBI*</li>
           </ul>
+          <p className="text-xs mt-2 italic">*Para una mejor experiencia con archivos MOBI, se recomienda tener instalado Calibre.</p>
         </div>
         
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
           <div>
-            <label className="block mb-2 text-sm font-medium">Selecciona un archivo PDF:</label>
+            <label className="block mb-2 text-sm font-medium">Selecciona un archivo:</label>
             <FileDropZone 
               onFileDrop={handleFileDrop}
-              accept=".pdf"
+              accept=".pdf,.epub,.mobi"
               file={file}
             />
+            <p className="text-xs text-gray-400 mt-1 text-center">Formatos soportados: PDF, EPUB, MOBI</p>
           </div>
           
           <button 
@@ -142,10 +153,12 @@ export default function Home() {
         </form>
         
         {showProgress && sessionId && (
-          <TranslationProgress 
-            sessionId={sessionId}
-            onComplete={handleTranslationComplete}
-          />
+          <div className="w-full mt-4">
+            <TranslationProgress 
+              sessionId={sessionId}
+              onComplete={handleTranslationComplete}
+            />
+          </div>
         )}
         
         {downloadUrl && (

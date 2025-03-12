@@ -5,6 +5,7 @@ import { PDFDocument, rgb, StandardFonts } from 'pdf-lib'
 import pdf from 'pdf-parse'
 import { join } from 'path'
 import * as deepl from 'deepl-node'
+import { getFileType, extractTextFromFile } from '../../../lib/fileProcessors'
 
 // Función para asegurar que existe un directorio
 async function ensureDir(dirPath: string) {
@@ -171,433 +172,504 @@ export async function POST(req: NextRequest) {
     
     const timestamp = Date.now()
     const originalFilename = pdfFile.name
-    const pdfPath = join(uploadsDir, `${timestamp}_${originalFilename}`)
+    const filePath = join(uploadsDir, `${timestamp}_${originalFilename}`)
     
-    await writeFile(pdfPath, buffer)
+    await writeFile(filePath, buffer)
     
-    // Extraer páginas del PDF según la configuración
-    const originalPdfDoc = await PDFDocument.load(buffer);
-    const totalPages = originalPdfDoc.getPageCount();
+    // Determinar el tipo de archivo
+    const fileType = getFileType(originalFilename);
     
-    let pdfData;
-    
-    if (CONFIG.limitedMode) {
-      // Modo de prueba - procesar solo un número limitado de páginas
-      const pagesToProcess = Math.min(CONFIG.maxPages, totalPages);
-      
-      // Crear un nuevo documento con las primeras N páginas
-      const limitedPdfDoc = await PDFDocument.create();
-      const copiedPages = await limitedPdfDoc.copyPages(
-        originalPdfDoc, 
-        Array.from({length: pagesToProcess}, (_, i) => i)
-      );
-      
-      copiedPages.forEach(page => limitedPdfDoc.addPage(page));
-      const limitedPdfBytes = await limitedPdfDoc.save();
-      
-      // Leer el PDF con límite de páginas
-      pdfData = await pdf(Buffer.from(limitedPdfBytes));
-      console.log(`Procesando solo ${pagesToProcess} de ${totalPages} páginas totales (modo limitado)`);
-    } else {
-      // Modo normal - procesar el documento completo
-      pdfData = await pdf(buffer);
-      console.log(`Procesando todas las ${totalPages} páginas (modo completo)`);
+    if (fileType === 'unknown') {
+      return NextResponse.json({ error: 'Tipo de archivo no soportado. Por favor, sube un PDF, EPUB o MOBI.' }, { status: 400 })
     }
     
-    // Dividir el contenido en frases con la función mejorada
-    const fullText = pdfData.text;
-    const sentences = splitIntoSentences(fullText);
+    console.log(`Procesando archivo ${fileType}: ${originalFilename}`);
     
-    // Limpiar las frases de caracteres problemáticos
-    const cleanedSentences = sentences.map(sentence => sanitizeText(sentence));
-    
-    // Informar al usuario sobre la limitación
-    const originalSentenceCount = cleanedSentences.length;
-    const pagesToProcess = CONFIG.limitedMode ? Math.min(CONFIG.maxPages, totalPages) : totalPages;
-    console.log(`Se procesarán ${originalSentenceCount} frases de las primeras ${pagesToProcess} páginas`);
-    
-    // Calcular el número estimado de páginas
-    const estimatedPagesCount = Math.ceil(sentences.length / 10); // Estimación simple: 10 frases por página
-    
-    // Almacenar el progreso en el objeto global
-    if (sessionId) {
-      global.translationProgress = global.translationProgress || {};
-      global.translationProgress[sessionId] = {
-        totalSentences: sentences.length,
-        completedSentences: 0,
-        totalPages: estimatedPagesCount,
-        currentPage: 0,
-        status: 'processing',
-        limitedMode: CONFIG.limitedMode,
-        processedPages: CONFIG.limitedMode ? Math.min(CONFIG.maxPages, totalPages) : totalPages,
-        totalPdfPages: totalPages
-      };
-    }
-    
-    // Traducir las frases limpias
-    const translatedSentences: Array<{ original: string; translation: string }> = [];
-    
-    // Procesamos en lotes más pequeños para mejorar la precisión y evitar problemas de límite
-    const batchSize = 25;
-    
-    for (let i = 0; i < cleanedSentences.length; i += batchSize) {
-      // Tomar el lote actual
-      const batch = cleanedSentences.slice(i, i + batchSize);
+    try {
+      // Extraer texto según el tipo de archivo
+      let fullText = '';
+      let totalPages = 1; // Valor predeterminado
       
-      try {
-        // Traducir este lote
-        const results = await translator.translateText(
-          batch,
-          'de', // Idioma de origen (alemán)
-          'es', // Idioma de destino (español)
-          {
-            preserveFormatting: true,
-            formality: 'more' as deepl.Formality
-          }
-        );
+      if (fileType === 'pdf') {
+        // Para PDF, utilizamos la lógica existente
+        const originalPdfDoc = await PDFDocument.load(buffer);
+        totalPages = originalPdfDoc.getPageCount();
         
-        // Procesar los resultados, asociando cada traducción con su frase original
-        if (Array.isArray(results)) {
-          for (let j = 0; j < batch.length; j++) {
-            // Sanitizar también la traducción
-            const sanitizedTranslation = sanitizeText(results[j].text);
+        if (CONFIG.limitedMode) {
+          // Modo de prueba - procesar solo un número limitado de páginas
+          const pagesToProcess = Math.min(CONFIG.maxPages, totalPages);
+          
+          // Crear un nuevo documento con las primeras N páginas
+          const limitedPdfDoc = await PDFDocument.create();
+          const copiedPages = await limitedPdfDoc.copyPages(
+            originalPdfDoc, 
+            Array.from({length: pagesToProcess}, (_, i) => i)
+          );
+          
+          copiedPages.forEach(page => limitedPdfDoc.addPage(page));
+          const limitedPdfBytes = await limitedPdfDoc.save();
+          
+          // Leer el PDF con límite de páginas
+          const pdfjs = await import('pdf-parse');
+          const pdfData = await pdfjs.default(Buffer.from(limitedPdfBytes));
+          fullText = pdfData.text;
+          console.log(`Procesando solo ${pagesToProcess} de ${totalPages} páginas totales (modo limitado)`);
+        } else {
+          // Modo normal - procesar el documento completo
+          const pdfjs = await import('pdf-parse');
+          const pdfData = await pdfjs.default(buffer);
+          fullText = pdfData.text;
+          console.log(`Procesando todas las ${totalPages} páginas (modo completo)`);
+        }
+      } else {
+        // Para EPUB y MOBI, extraemos todo el texto usando nuestra función simplificada
+        console.log(`Extrayendo texto de ${fileType}...`);
+        try {
+          fullText = await extractTextFromFile(filePath, fileType);
+          
+          // Para EPUB y MOBI no tenemos un concepto de "páginas" como en PDF,
+          // pero podemos estimar basándonos en la cantidad de texto
+          const estimatedCharsPerPage = 2000; // Aproximadamente 2000 caracteres por página
+          totalPages = Math.ceil(fullText.length / estimatedCharsPerPage) || 1;
+          
+          // Si está en modo limitado, recortamos el texto
+          if (CONFIG.limitedMode && totalPages > CONFIG.maxPages) {
+            const charsToKeep = CONFIG.maxPages * estimatedCharsPerPage;
+            fullText = fullText.substring(0, charsToKeep);
+            console.log(`Procesando aproximadamente ${CONFIG.maxPages} de ${totalPages} páginas estimadas (modo limitado)`);
+          } else {
+            console.log(`Procesando todo el contenido del archivo ${fileType}`);
+          }
+        } catch (error) {
+          console.error(`Error al extraer texto de ${fileType}:`, error);
+          return NextResponse.json({ 
+            error: `No se pudo extraer texto del archivo ${fileType}. ${error instanceof Error ? error.message : 'Error desconocido'}` 
+          }, { status: 500 });
+        }
+      }
+      
+      // Dividir el contenido en frases con la función mejorada
+      const sentences = splitIntoSentences(fullText);
+      
+      // Limpiar las frases de caracteres problemáticos
+      const cleanedSentences = sentences.map(sentence => sanitizeText(sentence));
+      
+      // Informar al usuario sobre la limitación
+      const originalSentenceCount = cleanedSentences.length;
+      const pagesToProcess = CONFIG.limitedMode ? Math.min(CONFIG.maxPages, totalPages) : totalPages;
+      console.log(`Se procesarán ${originalSentenceCount} frases de las primeras ${pagesToProcess} páginas`);
+      
+      // Calcular el número estimado de páginas
+      const estimatedPagesCount = Math.ceil(sentences.length / 10); // Estimación simple: 10 frases por página
+      
+      // Almacenar el progreso en el objeto global
+      if (sessionId) {
+        // Asegurarse de que la variable global exista
+        if (typeof global.translationProgress === 'undefined') {
+          global.translationProgress = {};
+        }
+        
+        // Inicializar datos de progreso con valores predeterminados
+        global.translationProgress[sessionId] = {
+          totalSentences: sentences.length,
+          completedSentences: 0,
+          totalPages: estimatedPagesCount || 1, // Evitar división por cero
+          currentPage: 0,
+          status: 'processing',
+          limitedMode: CONFIG.limitedMode,
+          processedPages: CONFIG.limitedMode ? Math.min(CONFIG.maxPages, totalPages) : totalPages,
+          totalPdfPages: totalPages
+        };
+        
+        // Log para debug
+        console.log(`Progreso inicializado para sesión ${sessionId}:`, global.translationProgress[sessionId]);
+      }
+      
+      // Traducir las frases limpias
+      const translatedSentences: Array<{ original: string; translation: string }> = [];
+      
+      // Procesamos en lotes más pequeños para mejorar la precisión y evitar problemas de límite
+      const batchSize = 25;
+      
+      for (let i = 0; i < cleanedSentences.length; i += batchSize) {
+        // Tomar el lote actual
+        const batch = cleanedSentences.slice(i, i + batchSize);
+        
+        try {
+          // Traducir este lote
+          const results = await translator.translateText(
+            batch,
+            'de', // Idioma de origen (alemán)
+            'es', // Idioma de destino (español)
+            {
+              preserveFormatting: true,
+              formality: 'more' as deepl.Formality
+            }
+          );
+          
+          // Procesar los resultados, asociando cada traducción con su frase original
+          if (Array.isArray(results)) {
+            for (let j = 0; j < batch.length; j++) {
+              // Sanitizar también la traducción
+              const sanitizedTranslation = sanitizeText(results[j].text);
+              
+              translatedSentences.push({ 
+                original: batch[j], 
+                translation: sanitizedTranslation 
+              });
+              
+              // Actualizar progreso de forma más robusta
+              if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
+                const newCompletedCount = i + j + 1;
+                global.translationProgress[sessionId].completedSentences = newCompletedCount;
+                global.translationProgress[sessionId].currentPage = Math.ceil(newCompletedCount / 10);
+                
+                // Log más frecuente para ver el progreso
+                if (newCompletedCount % 10 === 0 || newCompletedCount === sentences.length) {
+                  console.log(`Progreso de traducción: ${newCompletedCount}/${sentences.length} frases`);
+                }
+              }
+            }
+          } else {
+            // Si DeepL devolvió un solo resultado
+            const resultText = typeof results === 'object' && results !== null ? 
+                              (results as deepl.TextResult).text || '(Texto no disponible)' : 
+                              String(results);
+
+            const sanitizedTranslation = sanitizeText(resultText);
             
             translatedSentences.push({ 
-              original: batch[j], 
-              translation: sanitizedTranslation 
+              original: batch[0], 
+              translation: sanitizedTranslation
             });
             
             // Actualizar progreso
             if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
-              global.translationProgress[sessionId].completedSentences = i + j + 1;
-              global.translationProgress[sessionId].currentPage = Math.ceil((i + j + 1) / 10);
+              global.translationProgress[sessionId].completedSentences = i + 1;
+              global.translationProgress[sessionId].currentPage = Math.ceil((i + 1) / 10);
             }
           }
-        } else {
-          // Si DeepL devolvió un solo resultado
-          const resultText = typeof results === 'object' && results !== null ? 
-                            (results as deepl.TextResult).text || '(Texto no disponible)' : 
-                            String(results);
-
-          const sanitizedTranslation = sanitizeText(resultText);
+        } catch (error: unknown) {
+          console.error('Error traduciendo lote:', error instanceof Error ? error.message : String(error));
           
-          translatedSentences.push({ 
-            original: batch[0], 
-            translation: sanitizedTranslation
-          });
-          
-          // Actualizar progreso
-          if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
-            global.translationProgress[sessionId].completedSentences = i + 1;
-            global.translationProgress[sessionId].currentPage = Math.ceil((i + 1) / 10);
+          // En caso de error, agregar las frases sin traducir pero mantener el orden
+          for (const sentence of batch) {
+            translatedSentences.push({ 
+              original: sentence, 
+              translation: '(Error de traducción)' 
+            });
+            
+            // Actualizar progreso incluso en caso de error
+            if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
+              global.translationProgress[sessionId].completedSentences++;
+              global.translationProgress[sessionId].currentPage = 
+                Math.ceil(global.translationProgress[sessionId].completedSentences / 10);
+            }
           }
         }
-      } catch (error: unknown) {
-        console.error('Error traduciendo lote:', error instanceof Error ? error.message : String(error));
         
-        // En caso de error, agregar las frases sin traducir pero mantener el orden
-        for (const sentence of batch) {
-          translatedSentences.push({ 
-            original: sentence, 
-            translation: '(Error de traducción)' 
-          });
-          
-          // Actualizar progreso incluso en caso de error
-          if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
-            global.translationProgress[sessionId].completedSentences++;
-            global.translationProgress[sessionId].currentPage = 
-              Math.ceil(global.translationProgress[sessionId].completedSentences / 10);
-          }
-        }
+        // Pequeña pausa para permitir que las solicitudes de progreso se procesen
+        await new Promise(resolve => setTimeout(resolve, 200));
       }
       
-      // Pequeña pausa para no sobrecargar la API
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
-    
-    // Crear un nuevo PDF con las frases intercaladas
-    const pdfDoc = await PDFDocument.create();
-    
-    // Usamos Helvetica que tiene mejor soporte para caracteres
-    const helvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    const helveticaOblique = await pdfDoc.embedFont(StandardFonts.HelveticaOblique);
-    
-    const page = pdfDoc.addPage([595, 842]); // Tamaño A4 estándar
-    const { width, height } = page.getSize();
-    const fontSize = 11;
-    const lineHeight = fontSize * 1.2; // Más espacio entre líneas para mejor legibilidad
-    let y = height - 50;
-    
-    // Colores para los textos
-    const germanColor = rgb(0.1, 0.3, 0.6); // Azul para alemán
-    const spanishColor = rgb(0.7, 0.1, 0.1); // Rojo para español
-    
-    // Añadir las frases al PDF
-    const germanTextOptions = { 
-      size: fontSize,
-      color: germanColor,
-      font: helvetica
-    };
-    
-    const spanishTextOptions = {
-      size: fontSize,
-      color: spanishColor,
-      font: helveticaOblique // Usar cursiva para la traducción
-    };
-    
-    let currentPage = page;
-    let pageCount = 1;
-    
-    // Función mejorada para añadir texto con saltos de línea automáticos
-    const drawWrappedText = (text: string, options: any): number => {
-      // Asegurarse de que el texto no tenga caracteres problemáticos
-      const safeText = sanitizeText(text);
+      // Crear un nuevo PDF con las frases intercaladas
+      const pdfDoc = await PDFDocument.create();
       
-      const maxWidth = width - 100; // 50 píxels de margen en cada lado
-      const textLineHeight = options.size * 1.2;
+      // Usamos Helvetica que tiene mejor soporte para caracteres
+      const helvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
+      const helveticaOblique = await pdfDoc.embedFont(StandardFonts.HelveticaOblique);
       
-      // Dividir todo el texto en palabras
-      const words = safeText.split(' ');
-      let line = '';
-      let yPos = options.y;
+      const page = pdfDoc.addPage([595, 842]); // Tamaño A4 estándar
+      const { width, height } = page.getSize();
+      const fontSize = 11;
+      const lineHeight = fontSize * 1.2; // Más espacio entre líneas para mejor legibilidad
+      let y = height - 50;
       
-      for (let i = 0; i < words.length; i++) {
-        const word = words[i];
-        const testLine = line + (line ? ' ' : '') + word;
+      // Colores para los textos
+      const germanColor = rgb(0.1, 0.3, 0.6); // Azul para alemán
+      const spanishColor = rgb(0.7, 0.1, 0.1); // Rojo para español
+      
+      // Añadir las frases al PDF
+      const germanTextOptions = { 
+        size: fontSize,
+        color: germanColor,
+        font: helvetica
+      };
+      
+      const spanishTextOptions = {
+        size: fontSize,
+        color: spanishColor,
+        font: helveticaOblique // Usar cursiva para la traducción
+      };
+      
+      let currentPage = page;
+      let pageCount = 1;
+      
+      // Función mejorada para añadir texto con saltos de línea automáticos
+      const drawWrappedText = (text: string, options: any): number => {
+        // Asegurarse de que el texto no tenga caracteres problemáticos
+        const safeText = sanitizeText(text);
         
-        try {
-          // Usar la fuente para medir el texto con más seguridad
-          const textWidth = options.font.widthOfTextAtSize(testLine, options.size);
+        const maxWidth = width - 100; // 50 píxels de margen en cada lado
+        const textLineHeight = options.size * 1.2;
+        
+        // Dividir todo el texto en palabras
+        const words = safeText.split(' ');
+        let line = '';
+        let yPos = options.y;
+        
+        for (let i = 0; i < words.length; i++) {
+          const word = words[i];
+          const testLine = line + (line ? ' ' : '') + word;
           
-          if (textWidth > maxWidth && line !== '') {
-            // Si la línea actual ya es demasiado ancha, añadirla y empezar una nueva
+          try {
+            // Usar la fuente para medir el texto con más seguridad
+            const textWidth = options.font.widthOfTextAtSize(testLine, options.size);
+            
+            if (textWidth > maxWidth && line !== '') {
+              // Si la línea actual ya es demasiado ancha, añadirla y empezar una nueva
+              currentPage.drawText(line, {
+                ...options,
+                y: yPos
+              });
+              
+              line = word;
+              yPos -= textLineHeight;
+              
+              // Si ya no hay espacio en la página actual, crear una nueva
+              if (yPos < 50) {
+                currentPage = pdfDoc.addPage([595, 842]);
+                pageCount++;
+                yPos = currentPage.getHeight() - 50;
+                
+                // Actualizar el progreso (páginas reales)
+                if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
+                  global.translationProgress[sessionId].currentPage = pageCount;
+                  global.translationProgress[sessionId].totalPages = 
+                    Math.max(global.translationProgress[sessionId].totalPages, pageCount);
+                }
+              }
+            } else {
+              line = testLine;
+            }
+          } catch (error: unknown) {
+            console.warn(`Error al procesar palabra "${word}": ${error instanceof Error ? error.message : String(error)}`);
+            // Si hay un error con esta palabra, la omitimos y continuamos
+            line = line || '';
+          }
+        }
+        
+        // Añadir la última línea si queda algo
+        if (line) {
+          try {
             currentPage.drawText(line, {
               ...options,
               y: yPos
             });
-            
-            line = word;
-            yPos -= textLineHeight;
-            
-            // Si ya no hay espacio en la página actual, crear una nueva
-            if (yPos < 50) {
-              currentPage = pdfDoc.addPage([595, 842]);
-              pageCount++;
-              yPos = currentPage.getHeight() - 50;
-              
-              // Actualizar el progreso (páginas reales)
-              if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
-                global.translationProgress[sessionId].currentPage = pageCount;
-                global.translationProgress[sessionId].totalPages = 
-                  Math.max(global.translationProgress[sessionId].totalPages, pageCount);
-              }
-            }
-          } else {
-            line = testLine;
-          }
-        } catch (error: unknown) {
-          console.warn(`Error al procesar palabra "${word}": ${error instanceof Error ? error.message : String(error)}`);
-          // Si hay un error con esta palabra, la omitimos y continuamos
-          line = line || '';
-        }
-      }
-      
-      // Añadir la última línea si queda algo
-      if (line) {
-        try {
-          currentPage.drawText(line, {
-            ...options,
-            y: yPos
-          });
-        } catch (error: unknown) {
-          console.warn(`Error al añadir la última línea "${line}": ${error instanceof Error ? error.message : String(error)}`);
-        }
-      }
-      
-      // Devolver la nueva posición Y
-      return yPos - textLineHeight;
-    };
-    
-    // Añadir una página de título al principio
-    currentPage.drawText("Documento Traducido", {
-      x: 50,
-      y: height - 100,
-      size: 24,
-      font: helvetica
-    });
-    
-    currentPage.drawText(`Nombre original: ${originalFilename}`, {
-      x: 50,
-      y: height - 150,
-      size: 12,
-      font: helvetica
-    });
-    
-    currentPage.drawText(`Fecha: ${new Date().toLocaleDateString()}`, {
-      x: 50,
-      y: height - 180,
-      size: 12,
-      font: helvetica
-    });
-    
-    // Añadir texto que indique si es modo limitado o completo
-    if (CONFIG.limitedMode) {
-      currentPage.drawText(`VERSIÓN DE PRUEBA - Solo se han procesado las primeras ${Math.min(CONFIG.maxPages, totalPages)} páginas de ${totalPages}`, {
-        x: 50,
-        y: height - 210,
-        size: 12,
-        font: helvetica,
-        color: rgb(0.8, 0.4, 0.0) // Color naranja para destacar
-      });
-    } else {
-      currentPage.drawText(`Documento completo - Se han procesado las ${totalPages} páginas`, {
-        x: 50,
-        y: height - 210,
-        size: 12,
-        font: helvetica,
-        color: rgb(0.0, 0.5, 0.0) // Color verde para modo completo
-      });
-    }
-    
-    currentPage.drawText("Traducido con DeepL API", {
-      x: 50,
-      y: height - 240,
-      size: 12,
-      font: helvetica,
-      color: rgb(0.4, 0.4, 0.4)
-    });
-    
-    currentPage.drawText("DE: texto en alemán (azul)", {
-      x: 50,
-      y: height - 250,
-      size: 12,
-      font: helvetica,
-      color: germanColor
-    });
-    
-    currentPage.drawText("ES: traducción al español (rojo)", {
-      x: 50,
-      y: height - 270,
-      size: 12,
-      font: helvetica,
-      color: spanishColor
-    });
-    
-    // Añadir nueva página para empezar el contenido
-    currentPage = pdfDoc.addPage([595, 842]);
-    pageCount++;
-    y = currentPage.getHeight() - 50;
-    
-    // Añadir las frases al PDF con mejor gestión del espacio
-    for (const { original, translation } of translatedSentences) {
-      try {
-        // Verificar si hay suficiente espacio para al menos una línea de cada texto
-        const minimumHeightNeeded = lineHeight * 2 + 20; // 1 línea alemán + 1 línea español + margen
-        
-        if (y - minimumHeightNeeded < 50) {
-          currentPage = pdfDoc.addPage([595, 842]);
-          pageCount++;
-          y = currentPage.getHeight() - 50;
-          
-          // Actualizar el progreso (páginas reales)
-          if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
-            global.translationProgress[sessionId].currentPage = pageCount;
-            global.translationProgress[sessionId].totalPages = 
-              Math.max(global.translationProgress[sessionId].totalPages, pageCount);
+          } catch (error: unknown) {
+            console.warn(`Error al añadir la última línea "${line}": ${error instanceof Error ? error.message : String(error)}`);
           }
         }
         
-        // Añadir un separador visual entre pares de frases
-        if (y !== currentPage.getHeight() - 50) { // No en la primera frase de la página
-          currentPage.drawLine({
-            start: { x: 50, y: y + 10 },
-            end: { x: width - 50, y: y + 10 },
-            thickness: 0.5,
-            color: rgb(0.8, 0.8, 0.8),
-          });
-          y -= 15; // Espacio después del separador
-        }
-        
-        // Añadir prefijo al texto alemán
-        currentPage.drawText('DE: ', {
-          x: 50,
-          y,
-          ...germanTextOptions
-        });
-        
-        // Dibujar el texto alemán con saltos de línea mejorados
-        y = drawWrappedText(original, {
-          x: 75,
-          y,
-          ...germanTextOptions
-        });
-        
-        // Espacio entre alemán y español
-        y -= 10;
-        
-        // Añadir prefijo al texto español
-        currentPage.drawText('ES: ', {
-          x: 50,
-          y,
-          ...spanishTextOptions
-        });
-        
-        // Dibujar el texto español con saltos de línea mejorados
-        y = drawWrappedText(translation, {
-          x: 75,
-          y,
-          ...spanishTextOptions
-        });
-        
-        // Espacio adicional entre pares de frases
-        y -= 25;
-      } catch (error: unknown) {
-        console.error(`Error procesando par de frases: ${error instanceof Error ? error.message : String(error)}`);
-        // Continuar con el siguiente par de frases si hay un error
-      }
-    }
-    
-    // Añadir numeración de páginas al pie de cada página
-    for (let i = 0; i < pageCount; i++) {
-      const p = pdfDoc.getPage(i);
-      const pageSize = p.getSize();
+        // Devolver la nueva posición Y
+        return yPos - textLineHeight;
+      };
       
-      p.drawText(`Página ${i+1} de ${pageCount}`, {
-        x: pageSize.width / 2 - 40, // Centrado aproximado
-        y: 30,
-        size: 10,
-        color: rgb(0.5, 0.5, 0.5),
+      // Añadir una página de título al principio
+      currentPage.drawText("Documento Traducido", {
+        x: 50,
+        y: height - 100,
+        size: 24,
         font: helvetica
       });
+      
+      currentPage.drawText(`Nombre original: ${originalFilename}`, {
+        x: 50,
+        y: height - 150,
+        size: 12,
+        font: helvetica
+      });
+      
+      currentPage.drawText(`Formato original: ${fileType.toUpperCase()}`, {
+        x: 50,
+        y: height - 180,
+        size: 12,
+        font: helvetica
+      });
+      
+      currentPage.drawText(`Fecha: ${new Date().toLocaleDateString()}`, {
+        x: 50,
+        y: height - 210,
+        size: 12,
+        font: helvetica
+      });
+      
+      // Añadir texto que indique si es modo limitado o completo
+      if (CONFIG.limitedMode) {
+        currentPage.drawText(`VERSIÓN DE PRUEBA - Solo se han procesado las primeras ${Math.min(CONFIG.maxPages, totalPages)} páginas de ${totalPages}`, {
+          x: 50,
+          y: height - 240,
+          size: 12,
+          font: helvetica,
+          color: rgb(0.8, 0.4, 0.0) // Color naranja para destacar
+        });
+      } else {
+        currentPage.drawText(`Documento completo - Se han procesado las ${totalPages} páginas`, {
+          x: 50,
+          y: height - 240,
+          size: 12,
+          font: helvetica,
+          color: rgb(0.0, 0.5, 0.0) // Color verde para modo completo
+        });
+      }
+      
+      currentPage.drawText("Traducido con DeepL API", {
+        x: 50,
+        y: height - 270,
+        size: 12,
+        font: helvetica,
+        color: rgb(0.4, 0.4, 0.4)
+      });
+      
+      currentPage.drawText("DE: texto en alemán (azul)", {
+        x: 50,
+        y: height - 290,
+        size: 12,
+        font: helvetica,
+        color: germanColor
+      });
+      
+      currentPage.drawText("ES: traducción al español (rojo)", {
+        x: 50,
+        y: height - 310,
+        size: 12,
+        font: helvetica,
+        color: spanishColor
+      });
+      
+      // Añadir nueva página para empezar el contenido
+      currentPage = pdfDoc.addPage([595, 842]);
+      pageCount++;
+      y = currentPage.getHeight() - 50;
+      
+      // Añadir las frases al PDF con mejor gestión del espacio
+      for (const { original, translation } of translatedSentences) {
+        try {
+          // Verificar si hay suficiente espacio para al menos una línea de cada texto
+          const minimumHeightNeeded = lineHeight * 2 + 20; // 1 línea alemán + 1 línea español + margen
+          
+          if (y - minimumHeightNeeded < 50) {
+            currentPage = pdfDoc.addPage([595, 842]);
+            pageCount++;
+            y = currentPage.getHeight() - 50;
+            
+            // Actualizar el progreso (páginas reales)
+            if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
+              global.translationProgress[sessionId].currentPage = pageCount;
+              global.translationProgress[sessionId].totalPages = 
+                Math.max(global.translationProgress[sessionId].totalPages, pageCount);
+            }
+          }
+          
+          // Añadir un separador visual entre pares de frases
+          if (y !== currentPage.getHeight() - 50) { // No en la primera frase de la página
+            currentPage.drawLine({
+              start: { x: 50, y: y + 10 },
+              end: { x: width - 50, y: y + 10 },
+              thickness: 0.5,
+              color: rgb(0.8, 0.8, 0.8),
+            });
+            y -= 15; // Espacio después del separador
+          }
+          
+          // Añadir prefijo al texto alemán
+          currentPage.drawText('DE: ', {
+            x: 50,
+            y,
+            ...germanTextOptions
+          });
+          
+          // Dibujar el texto alemán con saltos de línea mejorados
+          y = drawWrappedText(original, {
+            x: 75,
+            y,
+            ...germanTextOptions
+          });
+          
+          // Espacio entre alemán y español
+          y -= 10;
+          
+          // Añadir prefijo al texto español
+          currentPage.drawText('ES: ', {
+            x: 50,
+            y,
+            ...spanishTextOptions
+          });
+          
+          // Dibujar el texto español con saltos de línea mejorados
+          y = drawWrappedText(translation, {
+            x: 75,
+            y,
+            ...spanishTextOptions
+          });
+          
+          // Espacio adicional entre pares de frases
+          y -= 25;
+        } catch (error: unknown) {
+          console.error(`Error procesando par de frases: ${error instanceof Error ? error.message : String(error)}`);
+          // Continuar con el siguiente par de frases si hay un error
+        }
+      }
+      
+      // Añadir numeración de páginas al pie de cada página
+      for (let i = 0; i < pageCount; i++) {
+        const p = pdfDoc.getPage(i);
+        const pageSize = p.getSize();
+        
+        p.drawText(`Página ${i+1} de ${pageCount}`, {
+          x: pageSize.width / 2 - 40, // Centrado aproximado
+          y: 30,
+          size: 10,
+          color: rgb(0.5, 0.5, 0.5),
+          font: helvetica
+        });
+      }
+      
+      // Actualizar estado a completado
+      if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
+        global.translationProgress[sessionId].status = 'completed';
+        global.translationProgress[sessionId].totalPages = pageCount;
+      }
+      
+      // Guardar el PDF
+      const pdfBytes = await pdfDoc.save();
+      const outputPath = join(uploadsDir, `translated_${timestamp}_${originalFilename}`);
+      await writeFile(outputPath, pdfBytes);
+      
+      // Leer el archivo para enviarlo como respuesta
+      const fileContent = await readFile(outputPath);
+      
+      // Limpiar archivos temporales (de forma asíncrona para no retrasar la respuesta)
+      Promise.all([
+        unlink(filePath).catch(err => console.error('Error eliminando archivo original:', err)),
+        unlink(outputPath).catch(err => console.error('Error eliminando archivo traducido:', err))
+      ]);
+      
+      // Devolver el PDF como respuesta
+      return new NextResponse(fileContent, {
+        headers: {
+          'Content-Type': 'application/pdf',
+          'Content-Disposition': `attachment; filename="translated_document.pdf"`,
+        },
+      });
+      
+    } catch (error) {
+      console.error(`Error al procesar el archivo ${fileType}:`, error);
+      return NextResponse.json({ 
+        error: `Error al extraer texto del archivo ${fileType}. Verifica que el archivo no esté dañado.`,
+        details: error instanceof Error ? error.message : String(error)
+      }, { status: 500 });
     }
-    
-    // Actualizar estado a completado
-    if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
-      global.translationProgress[sessionId].status = 'completed';
-      global.translationProgress[sessionId].totalPages = pageCount;
-    }
-    
-    // Guardar el PDF
-    const pdfBytes = await pdfDoc.save();
-    const outputPath = join(uploadsDir, `translated_${timestamp}_${originalFilename}`);
-    await writeFile(outputPath, pdfBytes);
-    
-    // Leer el archivo para enviarlo como respuesta
-    const fileContent = await readFile(outputPath);
-    
-    // Limpiar archivos temporales (de forma asíncrona para no retrasar la respuesta)
-    Promise.all([
-      unlink(pdfPath).catch(err => console.error('Error eliminando archivo original:', err)),
-      unlink(outputPath).catch(err => console.error('Error eliminando archivo traducido:', err))
-    ]);
-    
-    // Devolver el PDF como respuesta
-    return new NextResponse(fileContent, {
-      headers: {
-        'Content-Type': 'application/pdf',
-        'Content-Disposition': `attachment; filename="translated_document.pdf"`,
-      },
-    });
     
   } catch (error: unknown) {
     console.error('Error procesando el PDF:', error instanceof Error ? error.message : String(error));
