@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, FormEvent, useCallback } from 'react'
+import { useState, FormEvent, useCallback, useEffect } from 'react'
 import { v4 as uuidv4 } from 'uuid'
 import DeeplInfo from '../components/DeeplInfo'
 import TranslationProgress from '../components/TranslationProgress'
@@ -12,6 +12,7 @@ export default function Home() {
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null)
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [showProgress, setShowProgress] = useState<boolean>(false)
+  const [isLimitedMode, setIsLimitedMode] = useState<boolean>(true)
 
   const handleFileDrop = useCallback((newFile: File) => {
     setFile(newFile)
@@ -60,6 +61,23 @@ export default function Home() {
     setShowProgress(false)
   }, [])
 
+  // Verificar la configuración al cargar la página
+  useEffect(() => {
+    const checkConfig = async () => {
+      try {
+        const response = await fetch('/api/config');
+        if (response.ok) {
+          const data = await response.json();
+          setIsLimitedMode(data.limitedMode);
+        }
+      } catch (error) {
+        console.error('Error al verificar configuración:', error);
+      }
+    };
+    
+    checkConfig();
+  }, []);
+
   return (
     <main className="flex min-h-screen flex-col items-center justify-center p-6 bg-background">
       <div className="max-w-md w-full px-6 py-8 bg-white bg-opacity-5 rounded-xl shadow-xl">
@@ -68,14 +86,23 @@ export default function Home() {
           Sube un PDF en alemán y recibe otro con cada frase traducida al español
         </p>
         
-        {/* Aviso de modo de prueba */}
-        <div className="mb-6 p-3 bg-amber-500 bg-opacity-20 rounded-md text-sm">
-          <p className="font-medium">⚠️ Modo de prueba activo</p>
-          <p className="mt-1">
-            La aplicación está configurada para procesar solo las primeras 5 páginas del PDF
-            para conservar el límite gratuito de DeepL. En producción, se traduciría el documento completo.
-          </p>
-        </div>
+        {/* Mostrar banner según el modo configurado */}
+        {isLimitedMode ? (
+          <div className="mb-6 p-3 bg-amber-500 bg-opacity-20 rounded-md text-sm">
+            <p className="font-medium">⚠️ Modo de desarrollo</p>
+            <p className="mt-1">
+              La aplicación está procesando solo las primeras páginas del PDF
+              para conservar el límite gratuito de DeepL.
+            </p>
+          </div>
+        ) : (
+          <div className="mb-6 p-3 bg-green-500 bg-opacity-20 rounded-md text-sm">
+            <p className="font-medium">✅ Modo de producción</p>
+            <p className="mt-1">
+              La aplicación procesará el documento PDF completo.
+            </p>
+          </div>
+        )}
         
         <div className="mb-6 p-3 bg-blue-500 bg-opacity-20 rounded-md text-sm">
           <p className="font-medium">✨ Novedades:</p>

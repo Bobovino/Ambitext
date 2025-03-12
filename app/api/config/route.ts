@@ -1,0 +1,11 @@
+import { NextResponse } from 'next/server';
+
+// Obtener configuración desde variables de entorno
+const CONFIG = {
+  limitedMode: process.env.LIMITED_MODE !== 'false', // true por defecto
+  maxPages: parseInt(process.env.MAX_PAGES || '5')
+};
+
+export async function GET() {
+  return NextResponse.json(CONFIG);
+}

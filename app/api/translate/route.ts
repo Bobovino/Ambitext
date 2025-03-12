@@ -134,6 +134,12 @@ function sanitizeText(text: string): string {
   return sanitized.trim();
 }
 
+// Obtener configuración desde variables de entorno
+const CONFIG = {
+  limitedMode: process.env.LIMITED_MODE !== 'false', // true por defecto a menos que se establezca explícitamente como "false"
+  maxPages: parseInt(process.env.MAX_PAGES || '5')
+};
+
 export async function POST(req: NextRequest) {
   try {
     // Verificar que el API KEY esté configurado
@@ -169,24 +175,34 @@ export async function POST(req: NextRequest) {
     
     await writeFile(pdfPath, buffer)
     
-    // Extraer las 5 primeras páginas del PDF original para limitar el uso de la API
+    // Extraer páginas del PDF según la configuración
     const originalPdfDoc = await PDFDocument.load(buffer);
     const totalPages = originalPdfDoc.getPageCount();
-    const pagesToProcess = Math.min(5, totalPages); // Limitar a 5 páginas
     
-    // Crear un nuevo documento con las primeras 5 páginas
-    const limitedPdfDoc = await PDFDocument.create();
-    const copiedPages = await limitedPdfDoc.copyPages(
-      originalPdfDoc, 
-      Array.from({length: pagesToProcess}, (_, i) => i) // [0,1,2,3,4]
-    );
+    let pdfData;
     
-    copiedPages.forEach(page => limitedPdfDoc.addPage(page));
-    const limitedPdfBytes = await limitedPdfDoc.save();
-    
-    // Leer el PDF con límite de páginas
-    const pdfData = await pdf(Buffer.from(limitedPdfBytes));
-    console.log(`Procesando solo ${pagesToProcess} de ${totalPages} páginas totales`);
+    if (CONFIG.limitedMode) {
+      // Modo de prueba - procesar solo un número limitado de páginas
+      const pagesToProcess = Math.min(CONFIG.maxPages, totalPages);
+      
+      // Crear un nuevo documento con las primeras N páginas
+      const limitedPdfDoc = await PDFDocument.create();
+      const copiedPages = await limitedPdfDoc.copyPages(
+        originalPdfDoc, 
+        Array.from({length: pagesToProcess}, (_, i) => i)
+      );
+      
+      copiedPages.forEach(page => limitedPdfDoc.addPage(page));
+      const limitedPdfBytes = await limitedPdfDoc.save();
+      
+      // Leer el PDF con límite de páginas
+      pdfData = await pdf(Buffer.from(limitedPdfBytes));
+      console.log(`Procesando solo ${pagesToProcess} de ${totalPages} páginas totales (modo limitado)`);
+    } else {
+      // Modo normal - procesar el documento completo
+      pdfData = await pdf(buffer);
+      console.log(`Procesando todas las ${totalPages} páginas (modo completo)`);
+    }
     
     // Dividir el contenido en frases con la función mejorada
     const fullText = pdfData.text;
@@ -197,6 +213,7 @@ export async function POST(req: NextRequest) {
     
     // Informar al usuario sobre la limitación
     const originalSentenceCount = cleanedSentences.length;
+    const pagesToProcess = CONFIG.limitedMode ? Math.min(CONFIG.maxPages, totalPages) : totalPages;
     console.log(`Se procesarán ${originalSentenceCount} frases de las primeras ${pagesToProcess} páginas`);
     
     // Calcular el número estimado de páginas
@@ -211,8 +228,8 @@ export async function POST(req: NextRequest) {
         totalPages: estimatedPagesCount,
         currentPage: 0,
         status: 'processing',
-        limitedMode: true,
-        processedPages: pagesToProcess,
+        limitedMode: CONFIG.limitedMode,
+        processedPages: CONFIG.limitedMode ? Math.min(CONFIG.maxPages, totalPages) : totalPages,
         totalPdfPages: totalPages
       };
     }
@@ -423,14 +440,24 @@ export async function POST(req: NextRequest) {
       font: helvetica
     });
     
-    // Añadir texto que indique la limitación de páginas
-    currentPage.drawText(`VERSIÓN DE PRUEBA - Solo se han procesado las primeras ${pagesToProcess} páginas de ${totalPages}`, {
-      x: 50,
-      y: height - 210,
-      size: 12,
-      font: helvetica,
-      color: rgb(0.8, 0.4, 0.0) // Color naranja para destacar
-    });
+    // Añadir texto que indique si es modo limitado o completo
+    if (CONFIG.limitedMode) {
+      currentPage.drawText(`VERSIÓN DE PRUEBA - Solo se han procesado las primeras ${Math.min(CONFIG.maxPages, totalPages)} páginas de ${totalPages}`, {
+        x: 50,
+        y: height - 210,
+        size: 12,
+        font: helvetica,
+        color: rgb(0.8, 0.4, 0.0) // Color naranja para destacar
+      });
+    } else {
+      currentPage.drawText(`Documento completo - Se han procesado las ${totalPages} páginas`, {
+        x: 50,
+        y: height - 210,
+        size: 12,
+        font: helvetica,
+        color: rgb(0.0, 0.5, 0.0) // Color verde para modo completo
+      });
+    }
     
     currentPage.drawText("Traducido con DeepL API", {
       x: 50,
