@@ -2,7 +2,7 @@
 
 import { useState, FormEvent, useCallback, useEffect } from 'react'
 import { v4 as uuidv4 } from 'uuid'
-import DeeplInfo from '../components/DeeplInfo'
+/* import DeeplInfo from '../components/DeeplInfo' */
 import TranslationProgress from '../components/TranslationProgress'
 import FileDropZone from '../components/FileDropZone'
 
@@ -174,7 +174,7 @@ export default function Home() {
           </div>
         )}
         
-        <DeeplInfo />
+{/*         <DeeplInfo /> */}
       </div>
     </main>
   )

@@ -4,13 +4,73 @@ import { existsSync } from 'fs'
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib'
 import pdf from 'pdf-parse'
 import { join } from 'path'
-import * as deepl from 'deepl-node'
 import { getFileType, extractTextFromFile } from '../../../lib/fileProcessors'
 
 // Función para asegurar que existe un directorio
 async function ensureDir(dirPath: string) {
   if (!existsSync(dirPath)) {
     await mkdir(dirPath, { recursive: true })
+  }
+}
+
+// Nueva función para traducir texto usando la API personalizada de Hugging Face Inference
+async function translateWithHuggingFace(texts: string[]): Promise<string[]> {
+  try {
+    const apiUrl = process.env.HF_API_URL || '';
+    const apiToken = process.env.HF_API_TOKEN || '';
+    
+    if (!apiUrl) {
+      throw new Error('HF_API_URL no está configurado en las variables de entorno');
+    }
+    
+    const headers: HeadersInit = {
+      'Content-Type': 'application/json',
+    };
+    if (apiToken) {
+      headers['Authorization'] = `Bearer ${apiToken}`;
+    }
+    
+    console.log('Enviando solicitud a Hugging Face', { apiUrl, texts });
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        inputs: texts,
+        options: {
+          wait_for_model: true,
+        }
+      }),
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Respuesta de error de Hugging Face:', errorText);
+      throw new Error(`Error en la API de traducción: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+    
+    const result = await response.json();
+    console.log('Respuesta recibida de Hugging Face:', result);
+    
+    if (Array.isArray(result)) {
+      if (result.length > 0 && result[0].translation_text) {
+        const translations = result.map((item: any) => item.translation_text);
+        console.log('Traducciones extraídas:', translations);
+        return translations;
+      }
+      return result;
+    } else if (result.translations && Array.isArray(result.translations)) {
+      console.log('Usando el array result.translations:', result.translations);
+      return result.translations;
+    } else if (typeof result === 'string') {
+      console.log('Respuesta es string:', result);
+      return [result];
+    } else {
+      console.warn('Formato de respuesta inesperado:', result);
+      return texts.map(() => String(result));
+    }
+  } catch (error) {
+    console.error('Error al traducir con Hugging Face:', error);
+    return texts.map(() => '(Error de traducción)');
   }
 }
 
@@ -143,15 +203,12 @@ const CONFIG = {
 
 export async function POST(req: NextRequest) {
   try {
-    // Verificar que el API KEY esté configurado
-    const apiKey = process.env.DEEPL_API_KEY;
-    if (!apiKey) {
-      console.error('Error: DEEPL_API_KEY no está configurada en las variables de entorno');
+    // Verificar que la URL de API está configurada
+    const apiUrl = process.env.HF_API_URL;
+    if (!apiUrl) {
+      console.error('Error: HF_API_URL no está configurada en las variables de entorno');
       return NextResponse.json({ error: 'Error de configuración del servidor' }, { status: 500 });
     }
-
-    // Inicializar el cliente DeepL
-    const translator = new deepl.Translator(apiKey);
     
     // Preparar directorios para los archivos
     const uploadsDir = join(process.cwd(), 'uploads')
@@ -296,57 +353,30 @@ export async function POST(req: NextRequest) {
         const batch = cleanedSentences.slice(i, i + batchSize);
         
         try {
-          // Traducir este lote
-          const results = await translator.translateText(
-            batch,
-            'de', // Idioma de origen (alemán)
-            'es', // Idioma de destino (español)
-            {
-              preserveFormatting: true,
-              formality: 'more' as deepl.Formality
-            }
-          );
+          // Traducir este lote usando nuestra nueva función
+          const results = await translateWithHuggingFace(batch);
           
           // Procesar los resultados, asociando cada traducción con su frase original
-          if (Array.isArray(results)) {
-            for (let j = 0; j < batch.length; j++) {
-              // Sanitizar también la traducción
-              const sanitizedTranslation = sanitizeText(results[j].text);
-              
-              translatedSentences.push({ 
-                original: batch[j], 
-                translation: sanitizedTranslation 
-              });
-              
-              // Actualizar progreso de forma más robusta
-              if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
-                const newCompletedCount = i + j + 1;
-                global.translationProgress[sessionId].completedSentences = newCompletedCount;
-                global.translationProgress[sessionId].currentPage = Math.ceil(newCompletedCount / 10);
-                
-                // Log más frecuente para ver el progreso
-                if (newCompletedCount % 10 === 0 || newCompletedCount === sentences.length) {
-                  console.log(`Progreso de traducción: ${newCompletedCount}/${sentences.length} frases`);
-                }
-              }
-            }
-          } else {
-            // Si DeepL devolvió un solo resultado
-            const resultText = typeof results === 'object' && results !== null ? 
-                              (results as deepl.TextResult).text || '(Texto no disponible)' : 
-                              String(results);
-
-            const sanitizedTranslation = sanitizeText(resultText);
+          for (let j = 0; j < batch.length; j++) {
+            // Sanitizar también la traducción
+            const translationText = results[j] || '(No translation)';
+            const sanitizedTranslation = sanitizeText(translationText);
             
             translatedSentences.push({ 
-              original: batch[0], 
-              translation: sanitizedTranslation
+              original: batch[j], 
+              translation: sanitizedTranslation 
             });
             
-            // Actualizar progreso
+            // Actualizar progreso de forma más robusta
             if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
-              global.translationProgress[sessionId].completedSentences = i + 1;
-              global.translationProgress[sessionId].currentPage = Math.ceil((i + 1) / 10);
+              const newCompletedCount = i + j + 1;
+              global.translationProgress[sessionId].completedSentences = newCompletedCount;
+              global.translationProgress[sessionId].currentPage = Math.ceil(newCompletedCount / 10);
+              
+              // Log más frecuente para ver el progreso
+              if (newCompletedCount % 10 === 0 || newCompletedCount === sentences.length) {
+                console.log(`Progreso de traducción: ${newCompletedCount}/${sentences.length} frases`);
+              }
             }
           }
         } catch (error: unknown) {
@@ -523,7 +553,7 @@ export async function POST(req: NextRequest) {
         });
       }
       
-      currentPage.drawText("Traducido con DeepL API", {
+      currentPage.drawText("Traducido con Hugging Face Inference API", {
         x: 50,
         y: height - 270,
         size: 12,
