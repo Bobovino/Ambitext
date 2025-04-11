@@ -2,7 +2,6 @@
 
 import { useState, FormEvent, useCallback, useEffect } from 'react'
 import { v4 as uuidv4 } from 'uuid'
-/* import DeeplInfo from '../components/DeeplInfo' */
 import TranslationProgress from '../components/TranslationProgress'
 import FileDropZone from '../components/FileDropZone'
 
@@ -115,14 +114,13 @@ export default function Home() {
         <div className="mb-6 p-3 bg-blue-500 bg-opacity-20 rounded-md text-sm">
           <p className="font-medium">✨ Novedades:</p>
           <ul className="list-disc pl-5 mt-1 space-y-1">
-            <li>Traducción mejorada con DeepL API</li>
-            <li>Procesamiento por frases en lugar de líneas</li>
+            <li>Traducción mejorada con Opusmt de Hugging Face</li>
+            <li>Procesamiento por frases</li>
             <li>Textos en colores diferentes para mejor lectura</li>
             <li>Seguimiento del progreso de la traducción en tiempo real</li>
             <li>Ahora puedes arrastrar y soltar archivos</li>
-            <li><span className="font-semibold text-green-400">¡NUEVO!</span> Soporte para archivos EPUB y MOBI*</li>
+            <li><span className="font-semibold text-green-400">¡NUEVO!</span> Implementando Soporte para archivos EPUB y MOBI*</li>
           </ul>
-          <p className="text-xs mt-2 italic">*Para una mejor experiencia con archivos MOBI, se recomienda tener instalado Calibre.</p>
         </div>
         
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
@@ -173,8 +171,6 @@ export default function Home() {
             </a>
           </div>
         )}
-        
-{/*         <DeeplInfo /> */}
       </div>
     </main>
   )

@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from 'next/server'
 import { writeFile, mkdir, readFile, unlink } from 'fs/promises'
 import { existsSync } from 'fs'
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib'
-import pdf from 'pdf-parse'
 import { join } from 'path'
 import { getFileType, extractTextFromFile } from '../../../lib/fileProcessors'
 
