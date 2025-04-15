@@ -407,6 +407,7 @@ export async function POST(req: NextRequest) {
       // Usamos Helvetica que tiene mejor soporte para caracteres
       const helvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
       const helveticaOblique = await pdfDoc.embedFont(StandardFonts.HelveticaOblique);
+      const helveticaBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
       
       const page = pdfDoc.addPage([595, 842]); // Tamaño A4 estándar
       const { width, height } = page.getSize();
@@ -422,7 +423,7 @@ export async function POST(req: NextRequest) {
       const germanTextOptions = { 
         size: fontSize,
         color: germanColor,
-        font: helvetica
+        font: helveticaBold
       };
       
       const spanishTextOptions = {
@@ -564,7 +565,7 @@ export async function POST(req: NextRequest) {
         x: 50,
         y: height - 290,
         size: 12,
-        font: helvetica,
+        font: helveticaBold,
         color: germanColor
       });
       
