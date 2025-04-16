@@ -22,5 +22,8 @@ pnpm-debug.log*
 .env.test.local
 .env.production.local
 
-# PDF files
+# Ignore all PDF files by default
 *.pdf
+
+# But DO track PDF files inside the public/books directory
+!/public/books/*.pdf
