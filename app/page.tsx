@@ -118,8 +118,6 @@ export default function Home() {
             <li>Procesamiento por frases</li>
             <li>Textos en colores diferentes para mejor lectura</li>
             <li>Seguimiento del progreso de la traducción en tiempo real</li>
-            <li>Ahora puedes arrastrar y soltar archivos</li>
-            <li><span className="font-semibold text-green-400">¡NUEVO!</span> Implementando Soporte para archivos EPUB y MOBI*</li>
           </ul>
         </div>
         

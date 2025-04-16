@@ -252,6 +252,27 @@ const CONFIG = {
   maxPages: parseInt(process.env.MAX_PAGES || '5')
 };
 
+async function addCoverPage(originalPdfBuffer: Buffer, translatedPdfBuffer: Buffer): Promise<Buffer> {
+  // Cargar el documento original y el traducido
+  const originalPdfDoc = await PDFDocument.load(originalPdfBuffer);
+  const translatedPdfDoc = await PDFDocument.load(translatedPdfBuffer);
+
+  // Crear un nuevo documento PDF
+  const finalPdfDoc = await PDFDocument.create();
+
+  // Copiar la portada (primera página) del documento original
+  const [coverPage] = await finalPdfDoc.copyPages(originalPdfDoc, [0]);
+  finalPdfDoc.addPage(coverPage);
+
+  // Copiar todas las páginas del documento traducido
+  const translatedPages = await finalPdfDoc.copyPages(translatedPdfDoc, translatedPdfDoc.getPageIndices());
+  translatedPages.forEach((page) => finalPdfDoc.addPage(page));
+
+  // Guardar el nuevo documento con la portada incluida
+  const finalPdfBytes = await finalPdfDoc.save();
+  return Buffer.from(finalPdfBytes); // Convertir Uint8Array a Buffer
+}
+
 export async function POST(req: NextRequest) {
   try {
     // Verificar que la URL de API está configurada
@@ -747,9 +768,17 @@ export async function POST(req: NextRequest) {
       }
       
       // Guardar el PDF
-      const pdfBytes = await pdfDoc.save();
-      const outputPath = join(uploadsDir, `translated_${timestamp}_${originalFilename}`);
-      await writeFile(outputPath, pdfBytes);
+      const translatedPdfBytes: Uint8Array = await pdfDoc.save();
+
+      // Convertir el Uint8Array traducido a Buffer ANTES de llamar a addCoverPage
+      const translatedPdfBuffer = Buffer.from(translatedPdfBytes);
+
+      // Agregar la portada al PDF traducido
+      const finalPdfBuffer = await addCoverPage(buffer, translatedPdfBuffer);
+
+      const outputFilename = `translated_${originalFilename}`;
+      const outputPath = join(uploadsDir, outputFilename);
+      await writeFile(outputPath, finalPdfBuffer);
       
       // Leer el archivo para enviarlo como respuesta
       const fileContent = await readFile(outputPath);
