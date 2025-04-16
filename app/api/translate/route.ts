@@ -163,14 +163,22 @@ function splitLongSentence(longSentence: string): string[] {
 // Función auxiliar para limpiar texto de caracteres problemáticos
 function sanitizeText(text: string): string {
   if (!text) return '';
-  
+
+  let sanitized = text;
+
+  // --- NUEVO: Intentar separar ligaduras comunes ---
+  sanitized = sanitized.replace(/ﬁ/g, 'fi'); // ff ligature
+  sanitized = sanitized.replace(/ﬂ/g, 'fl'); // fl ligature
+  // Añadir otras ligaduras si se identifican más (e.g., ffi, ffl)
+  // --- FIN NUEVO ---
+
   // Reemplazar saltos de línea por espacios
-  let sanitized = text.replace(/[\n\r]+/g, ' ');
-  
+  sanitized = sanitized.replace(/[\n\r]+/g, ' ');
+
   // Reemplazar múltiples espacios por uno solo
   sanitized = sanitized.replace(/\s+/g, ' ');
-  
-  // Eliminar caracteres que causan problemas con WinAnsi
+
+  // Eliminar caracteres que causan problemas con WinAnsi o son no estándar
   sanitized = sanitized.replace(/[^\x00-\xFF]/g, (char) => {
     // Reemplazar caracteres no-ASCII con sustitutos seguros o espacios
     switch (char) {
@@ -186,11 +194,18 @@ function sanitizeText(text: string): string {
       case '\u2013': // –
       case '\u2014': // —
         return '-';
+      // Podríamos añadir más reemplazos específicos si fuera necesario
       default:
-        return ' '; // Para otros caracteres Unicode, usar espacio
+        // Para otros caracteres Unicode que no queremos específicamente,
+        // usar un espacio podría ser más seguro que eliminarlos,
+        // para evitar unir palabras accidentalmente si el carácter estaba solo.
+        return ' ';
     }
   });
-  
+
+  // Volver a colapsar espacios por si los reemplazos introdujeron múltiples
+  sanitized = sanitized.replace(/\s+/g, ' ');
+
   return sanitized.trim();
 }
 
@@ -307,11 +322,21 @@ export async function POST(req: NextRequest) {
       // Dividir el contenido en frases con la función mejorada
       const sentences = splitIntoSentences(fullText);
       
+      // Log ANTES de limpiar
+      console.log('--- Sentences BEFORE sanitization ---');
+      console.log(JSON.stringify(sentences.slice(0, 10), null, 2)); // Loguear las primeras 10 para no saturar
+
       // Limpiar las frases de caracteres problemáticos
       const cleanedSentences = sentences.map(sentence => sanitizeText(sentence));
-      
+
+      // Log DESPUÉS de limpiar
+      console.log('--- Sentences AFTER sanitization ---');
+      console.log(JSON.stringify(cleanedSentences.slice(0, 10), null, 2)); // Loguear las primeras 10 limpias
+
       // Informar al usuario sobre la limitación
       const originalSentenceCount = cleanedSentences.length;
+      
+      // Informar al usuario sobre la limitación
       const pagesToProcess = CONFIG.limitedMode ? Math.min(CONFIG.maxPages, totalPages) : totalPages;
       console.log(`Se procesarán ${originalSentenceCount} frases de las primeras ${pagesToProcess} páginas`);
       
@@ -346,59 +371,72 @@ export async function POST(req: NextRequest) {
       
       // Procesamos en lotes más pequeños para mejorar la precisión y evitar problemas de límite
       const batchSize = 25;
-      
+      const retryDelay = 1000; // Espera en milisegundos antes de reintentar
+      const retryTimeout = 60000; // 1 minuto en milisegundos
+
       for (let i = 0; i < cleanedSentences.length; i += batchSize) {
         // Tomar el lote actual
         const batch = cleanedSentences.slice(i, i + batchSize);
-        
-        try {
-          // Traducir este lote usando nuestra nueva función
-          const results = await translateWithHuggingFace(batch);
-          
-          // Procesar los resultados, asociando cada traducción con su frase original
-          for (let j = 0; j < batch.length; j++) {
-            // Sanitizar también la traducción
-            const translationText = results[j] || '(No translation)';
-            const sanitizedTranslation = sanitizeText(translationText);
-            
-            translatedSentences.push({ 
-              original: batch[j], 
-              translation: sanitizedTranslation 
-            });
-            
-            // Actualizar progreso de forma más robusta
-            if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
-              const newCompletedCount = i + j + 1;
-              global.translationProgress[sessionId].completedSentences = newCompletedCount;
-              global.translationProgress[sessionId].currentPage = Math.ceil(newCompletedCount / 10);
+        let results: string[] = [];
+        let success = false;
+        let attempts = 0;
+        let firstErrorTime: number | null = null; // Para rastrear el tiempo del primer error en este lote
+
+        while (!success) { 
+          try {
+            // Traducir este lote usando nuestra nueva función
+            console.log(`Intentando traducir lote ${Math.floor(i / batchSize) + 1}, intento ${attempts + 1}`);
+            results = await translateWithHuggingFace(batch);
+            success = true; // Marcar como éxito si la llamada no lanza error
+            firstErrorTime = null; // Resetear el timer si la traducción tiene éxito
+
+            // Procesar los resultados, asociando cada traducción con su frase original
+            for (let j = 0; j < batch.length; j++) {
+              // Sanitizar también la traducción
+              const translationText = results[j] || '(No translation)'; 
+              const sanitizedTranslation = sanitizeText(translationText);
               
-              // Log más frecuente para ver el progreso
-              if (newCompletedCount % 10 === 0 || newCompletedCount === sentences.length) {
-                console.log(`Progreso de traducción: ${newCompletedCount}/${sentences.length} frases`);
+              translatedSentences.push({ 
+                original: batch[j], 
+                translation: sanitizedTranslation 
+              });
+              
+              // Actualizar progreso de forma más robusta
+              if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
+                const newCompletedCount = i + j + 1;
+                global.translationProgress[sessionId].completedSentences = newCompletedCount;
+                global.translationProgress[sessionId].currentPage = Math.ceil(newCompletedCount / 10);
+                
+                // Log más frecuente para ver el progreso
+                if (newCompletedCount % 10 === 0 || newCompletedCount === sentences.length) {
+                  console.log(`Progreso de traducción: ${newCompletedCount}/${sentences.length} frases`);
+                }
               }
             }
-          }
-        } catch (error: unknown) {
-          console.error('Error traduciendo lote:', error instanceof Error ? error.message : String(error));
-          
-          // En caso de error, agregar las frases sin traducir pero mantener el orden
-          for (const sentence of batch) {
-            translatedSentences.push({ 
-              original: sentence, 
-              translation: '(Error de traducción)' 
-            });
-            
-            // Actualizar progreso incluso en caso de error
-            if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
-              global.translationProgress[sessionId].completedSentences++;
-              global.translationProgress[sessionId].currentPage = 
-                Math.ceil(global.translationProgress[sessionId].completedSentences / 10);
+          } catch (error: unknown) {
+            attempts++;
+            console.error(`Error traduciendo lote (intento ${attempts}):`, error instanceof Error ? error.message : String(error));
+
+            // Registrar la hora del primer error para este lote
+            if (firstErrorTime === null) {
+              firstErrorTime = Date.now();
             }
+
+            // Comprobar si ha pasado el tiempo límite desde el primer error
+            if (Date.now() - firstErrorTime > retryTimeout) {
+              console.error(`Timeout: Se superó el límite de ${retryTimeout / 1000} segundos reintentando el lote que empieza en el índice ${i}. Abortando traducción.`);
+              // Lanzar un error para detener el proceso completo, ya que no se deben añadir frases sin traducir
+              throw new Error(`Timeout de traducción para el lote ${Math.floor(i / batchSize) + 1}. No se pudo traducir después de ${retryTimeout / 1000} segundos.`);
+            }
+            
+            // Esperar antes del siguiente intento
+            console.log(`Esperando ${retryDelay}ms antes de reintentar...`);
+            await new Promise(resolve => setTimeout(resolve, retryDelay));
           }
         }
         
-        // Pequeña pausa para permitir que las solicitudes de progreso se procesen
-        await new Promise(resolve => setTimeout(resolve, 200));
+        // Pequeña pausa después de procesar un lote exitoso
+        await new Promise(resolve => setTimeout(resolve, 200)); 
       }
       
       // Crear un nuevo PDF con las frases intercaladas
@@ -693,11 +731,16 @@ export async function POST(req: NextRequest) {
         },
       });
       
-    } catch (error) {
-      console.error(`Error al procesar el archivo ${fileType}:`, error);
+    } catch (error) { // Este catch manejará el error de timeout lanzado desde el bucle while
+      console.error(`Error durante el proceso de traducción o creación de PDF:`, error);
+      // Actualizar estado a error si existe la sesión
+      if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
+        global.translationProgress[sessionId].status = 'error';
+      }
+      // Devolver un error genérico al cliente
       return NextResponse.json({ 
-        error: `Error al extraer texto del archivo ${fileType}. Verifica que el archivo no esté dañado.`,
-        details: error instanceof Error ? error.message : String(error)
+        error: `Error durante el procesamiento del archivo.`,
+        details: error instanceof Error ? error.message : String(error) // Incluir el mensaje de timeout si es el caso
       }, { status: 500 });
     }
     
