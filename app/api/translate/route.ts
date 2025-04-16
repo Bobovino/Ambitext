@@ -14,63 +14,100 @@ async function ensureDir(dirPath: string) {
 
 // Nueva función para traducir texto usando la API personalizada de Hugging Face Inference
 async function translateWithHuggingFace(texts: string[]): Promise<string[]> {
-  try {
-    const apiUrl = process.env.HF_API_URL || '';
-    const apiToken = process.env.HF_API_TOKEN || '';
-    
-    if (!apiUrl) {
-      throw new Error('HF_API_URL no está configurado en las variables de entorno');
-    }
-    
-    const headers: HeadersInit = {
-      'Content-Type': 'application/json',
-    };
-    if (apiToken) {
-      headers['Authorization'] = `Bearer ${apiToken}`;
-    }
-    
-    console.log('Enviando solicitud a Hugging Face', { apiUrl, texts });
-    const response = await fetch(apiUrl, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        inputs: texts,
-        options: {
-          wait_for_model: true,
-        }
-      }),
-    });
-    
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('Respuesta de error de Hugging Face:', errorText);
-      throw new Error(`Error en la API de traducción: ${response.status} ${response.statusText} - ${errorText}`);
-    }
-    
-    const result = await response.json();
-    console.log('Respuesta recibida de Hugging Face:', result);
-    
-    if (Array.isArray(result)) {
-      if (result.length > 0 && result[0].translation_text) {
-        const translations = result.map((item: any) => item.translation_text);
-        console.log('Traducciones extraídas:', translations);
-        return translations;
+  const maxRetries = 3; // Número máximo de reintentos
+  const retryDelay = 2000; // Retraso entre reintentos en milisegundos (2 segundos)
+  let attempt = 0;
+
+  while (attempt < maxRetries) {
+    attempt++;
+    try {
+      const apiUrl = process.env.HF_API_URL || '';
+      const apiToken = process.env.HF_API_TOKEN || '';
+
+      if (!apiUrl) {
+        // Este error es de configuración, no tiene sentido reintentar
+        throw new Error('HF_API_URL no está configurado en las variables de entorno');
       }
-      return result;
-    } else if (result.translations && Array.isArray(result.translations)) {
-      console.log('Usando el array result.translations:', result.translations);
-      return result.translations;
-    } else if (typeof result === 'string') {
-      console.log('Respuesta es string:', result);
-      return [result];
-    } else {
-      console.warn('Formato de respuesta inesperado:', result);
-      return texts.map(() => String(result));
+
+      const headers: HeadersInit = {
+        'Content-Type': 'application/json',
+      };
+      if (apiToken) {
+        headers['Authorization'] = `Bearer ${apiToken}`;
+      }
+
+      console.log(`Enviando solicitud a Hugging Face (Intento ${attempt}/${maxRetries})`, { apiUrl, texts: texts.slice(0, 2) }); // Log solo las primeras 2 frases
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          inputs: texts,
+          options: {
+            wait_for_model: true, // Esperar a que el modelo esté listo
+          }
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`Respuesta de error de Hugging Face (Intento ${attempt}/${maxRetries}):`, response.status, response.statusText, errorText);
+        // Si es un error 503 (Service Unavailable) o similar, reintentar
+        if ((response.status === 503 || response.status >= 500) && attempt < maxRetries) {
+          console.log(`Reintentando por error ${response.status} en ${retryDelay / 1000} segundos...`);
+          await new Promise(resolve => setTimeout(resolve, retryDelay));
+          continue; // Pasar al siguiente intento
+        }
+        // Si no es un error retriable o se agotaron los intentos, lanzar error
+        throw new Error(`Error en la API de traducción: ${response.status} ${response.statusText} - ${errorText}`);
+      }
+
+      // Si la respuesta es OK, procesarla
+      const result = await response.json();
+      console.log('Respuesta recibida de Hugging Face:', result);
+
+      if (Array.isArray(result)) {
+        if (result.length > 0 && result[0].translation_text) {
+          const translations = result.map((item: any) => item.translation_text);
+          console.log('Traducciones extraídas:', translations.slice(0, 2)); // Log primeras 2
+          return translations; // Éxito, retornar traducciones
+        }
+        console.warn('Formato de array inesperado, devolviendo array:', result);
+        return result.map(item => String(item));
+      } else if (result.translations && Array.isArray(result.translations)) {
+        console.log('Usando el array result.translations:', result.translations.slice(0, 2)); // Log primeras 2
+        return result.translations; // Éxito, retornar traducciones
+      } else if (typeof result === 'string') {
+        console.log('Respuesta es string:', result);
+        return [result]; // Éxito, retornar traducción como array
+      } else if (result && result.error && typeof result.error === 'string') {
+        console.warn(`Error devuelto por la API de Hugging Face: ${result.error}`);
+        if (result.error.includes("currently loading") && attempt < maxRetries) {
+          const estimatedTime = result.estimated_time || (retryDelay / 1000);
+          const waitTime = Math.max(retryDelay, estimatedTime * 1000);
+          console.log(`Modelo cargando. Reintentando en ${waitTime / 1000} segundos...`);
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+          continue; // Pasar al siguiente intento
+        }
+        throw new Error(`Error en la API de traducción: ${result.error}`);
+      } else {
+        console.warn('Formato de respuesta inesperado:', result);
+        throw new Error(`Formato de respuesta inesperado de la API: ${JSON.stringify(result)}`);
+      }
+    } catch (error) {
+      console.error(`Error durante la traducción con Hugging Face (Intento ${attempt}/${maxRetries}):`, error);
+
+      if (attempt >= maxRetries) {
+        console.error('Se agotaron los reintentos para la traducción después de un error.');
+        throw new Error(`Fallo definitivo al traducir después de ${maxRetries} intentos: ${error instanceof Error ? error.message : String(error)}`);
+      }
+
+      console.log(`Reintentando tras error en ${retryDelay / 1000} segundos...`);
+      await new Promise(resolve => setTimeout(resolve, retryDelay));
     }
-  } catch (error) {
-    console.error('Error al traducir con Hugging Face:', error);
-    return texts.map(() => '(Error de traducción)');
   }
+
+  console.error('Se agotaron los reintentos para la traducción (fin inesperado del bucle).');
+  throw new Error(`Se agotaron los reintentos (${maxRetries}) para la traducción.`);
 }
 
 // Función mejorada para dividir el texto en frases más pequeñas
