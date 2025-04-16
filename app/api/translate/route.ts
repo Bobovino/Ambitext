@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { writeFile, mkdir, readFile, unlink } from 'fs/promises'
 import { existsSync } from 'fs'
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib'
-import { join } from 'path'
+import { join, parse } from 'path' // Importar 'parse' de 'path'
 import { getFileType, extractTextFromFile } from '../../../lib/fileProcessors'
 
 // Función para asegurar que existe un directorio
@@ -513,7 +513,7 @@ export async function POST(req: NextRequest) {
       
       // Colores para los textos
       const germanColor = rgb(0.1, 0.3, 0.6); // Azul para alemán
-      const spanishColor = rgb(0.7, 0.1, 0.1); // Rojo para español
+      const spanishColor = rgb(0, 0, 0); // Negro para español
       
       // Añadir las frases al PDF
       const germanTextOptions = { 
@@ -665,7 +665,7 @@ export async function POST(req: NextRequest) {
         color: germanColor
       });
       
-      currentPage.drawText("ES: traducción al español (rojo)", {
+      currentPage.drawText("ES: traducción al español (negro)", {
         x: 50,
         y: height - 310,
         size: 12,
@@ -762,34 +762,44 @@ export async function POST(req: NextRequest) {
       // Agregar la portada al PDF traducido
       const finalPdfBuffer = await addCoverPage(buffer, translatedPdfBuffer);
 
-      const outputFilename = `translated_${originalFilename}`;
-      const outputPath = join(uploadsDir, outputFilename);
+      // --- CONSTRUIR NOMBRE DE ARCHIVO DE SALIDA ---
+      const parsedOriginalFilename = parse(originalFilename); // Obtener partes del nombre original
+      const outputFilenameBase = parsedOriginalFilename.name; // Nombre sin extensión
+      const outputFilename = `${outputFilenameBase}_translated.pdf`; // Nuevo nombre con sufijo y extensión .pdf
+      // --- FIN CONSTRUCCIÓN NOMBRE ---
+
+      const outputPath = join(uploadsDir, outputFilename); // Usar el nuevo nombre para guardar temporalmente
       await writeFile(outputPath, finalPdfBuffer);
-      
+
       // Leer el archivo para enviarlo como respuesta
       const fileContent = await readFile(outputPath);
-      
+
       // Limpiar archivos temporales (de forma asíncrona para no retrasar la respuesta)
       Promise.all([
-        unlink(filePath).catch(err => console.error('Error eliminando archivo original:', err)),
-        unlink(outputPath).catch(err => console.error('Error eliminando archivo traducido:', err))
+        unlink(filePath).catch(err => console.error('Error eliminando archivo original temporal:', err)), // El guardado inicial
+        unlink(outputPath).catch(err => console.error('Error eliminando archivo traducido temporal:', err)) // El PDF final guardado
       ]);
-      
-      // Devolver el PDF como respuesta
+
+      // Devolver el PDF como respuesta con el nombre de archivo deseado
       return new NextResponse(fileContent, {
         headers: {
           'Content-Type': 'application/pdf',
-          'Content-Disposition': `attachment; filename="translated_document.pdf"`,
+          // Usar el nuevo nombre de archivo en Content-Disposition
+          'Content-Disposition': `attachment; filename="${outputFilename}"`,
         },
       });
-      
+
     } catch (error) { // Este catch manejará el error de timeout lanzado desde el bucle while
       console.error(`Error durante el proceso de traducción o creación de PDF:`, error);
       // Actualizar estado a error si existe la sesión
       if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
         global.translationProgress[sessionId].status = 'error';
       }
-      // Devolver un error genérico al cliente
+      // Asegurarse de limpiar el archivo original temporal si existe en caso de error
+      if (filePath && existsSync(filePath)) {
+        await unlink(filePath).catch(err => console.error('Error eliminando archivo original temporal tras error:', err));
+      }
+      // No hay archivo de salida que limpiar si el error ocurrió antes de crearlo
       return NextResponse.json({ 
         error: `Error durante el procesamiento del archivo.`,
         details: error instanceof Error ? error.message : String(error) // Incluir el mensaje de timeout si es el caso
@@ -797,9 +807,9 @@ export async function POST(req: NextRequest) {
     }
     
   } catch (error: unknown) {
-    console.error('Error procesando el PDF:', error instanceof Error ? error.message : String(error));
+    console.error('Error procesando la solicitud:', error instanceof Error ? error.message : String(error));
     return NextResponse.json({ 
-      error: 'Error procesando el PDF', 
+      error: 'Error procesando la solicitud', 
       details: error instanceof Error ? error.message : String(error) 
     }, { status: 500 });
   }

@@ -85,6 +85,17 @@ export default function Home() {
     checkConfig();
   }, []);
 
+  // --- CONSTRUIR NOMBRE DE ARCHIVO PARA DESCARGA ---
+  const getDownloadFilename = () => {
+    if (!file) {
+      return 'documento_traducido.pdf'; // Fallback por si acaso
+    }
+    const originalName = file.name;
+    const nameWithoutExtension = originalName.substring(0, originalName.lastIndexOf('.')) || originalName;
+    return `${nameWithoutExtension}_translated.pdf`;
+  };
+  // --- FIN CONSTRUCCIÓN NOMBRE ---
+
   return (
     <main className="flex min-h-screen flex-col items-center justify-center p-6 bg-background">
       <div className="max-w-md w-full px-6 py-8 bg-white bg-opacity-5 rounded-xl shadow-xl">
@@ -162,7 +173,7 @@ export default function Home() {
             <p className="text-green-400 mb-3">¡Traducción completada!</p>
             <a 
               href={downloadUrl} 
-              download="documento_traducido.pdf" 
+              download={getDownloadFilename()} 
               className="btn-secondary inline-block"
             >
               Descargar PDF Traducido
