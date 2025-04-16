@@ -708,16 +708,9 @@ export async function POST(req: NextRequest) {
             y -= 15; // Espacio después del separador
           }
           
-          // Añadir prefijo al texto alemán
-          currentPage.drawText('DE: ', {
-            x: 50,
-            y,
-            ...germanTextOptions
-          });
-          
-          // Dibujar el texto alemán con saltos de línea mejorados
+          // Dibujar el texto alemán con saltos de línea mejorados (sin prefijo)
           y = drawWrappedText(original, {
-            x: 75,
+            x: 50, // Empezar en el margen
             y,
             ...germanTextOptions
           });
@@ -725,16 +718,9 @@ export async function POST(req: NextRequest) {
           // Espacio entre alemán y español
           y -= 10;
           
-          // Añadir prefijo al texto español
-          currentPage.drawText('ES: ', {
-            x: 50,
-            y,
-            ...spanishTextOptions
-          });
-          
-          // Dibujar el texto español con saltos de línea mejorados
+          // Dibujar el texto español con saltos de línea mejorados (sin prefijo)
           y = drawWrappedText(translation, {
-            x: 75,
+            x: 50, // Empezar en el margen
             y,
             ...spanishTextOptions
           });
