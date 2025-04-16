@@ -23,7 +23,7 @@ const availableBooks: Book[] = [
   },
   {
     id: 'durrenmatt_physiker', // ID único
-    title: 'Los Físicos', // Título en español (supuesto)
+    title: 'Los Físicos', 
     author: 'Friedrich Dürrenmatt', // Autor (supuesto)
     filename: 'Die Physiker traducido.pdf', // Nombre exacto del archivo en public/books
     languagePair: 'DE-ES',
