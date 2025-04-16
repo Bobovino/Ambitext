@@ -697,7 +697,7 @@ export async function POST(req: NextRequest) {
             }
           }
           
-          // Añadir un separador visual entre pares de frases
+/*           // Añadir un separador visual entre pares de frases
           if (y !== currentPage.getHeight() - 50) { // No en la primera frase de la página
             currentPage.drawLine({
               start: { x: 50, y: y + 10 },
@@ -706,7 +706,7 @@ export async function POST(req: NextRequest) {
               color: rgb(0.8, 0.8, 0.8),
             });
             y -= 15; // Espacio después del separador
-          }
+          } */
           
           // Dibujar el texto alemán con saltos de línea mejorados (sin prefijo)
           y = drawWrappedText(original, {
