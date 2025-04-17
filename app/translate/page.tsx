@@ -140,7 +140,7 @@ export default function Translate() {
               accept=".pdf,.epub,.mobi"
               file={file}
             />
-            <p className="text-xs text-gray-400 mt-1 text-center">Formatos soportados: PDF, EPUB, MOBI</p>
+            <p className="text-xs text-gray-400 mt-1 text-center">Formatos soportados: PDF</p>
           </div>
           
           <button 
