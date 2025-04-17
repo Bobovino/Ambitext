@@ -5,6 +5,27 @@ import { PDFDocument, rgb, StandardFonts } from 'pdf-lib'
 import { join, parse } from 'path'
 import { getFileType, extractTextFromFile } from '../../../lib/fileProcessors'
 
+// --- Define Progress State Interface ---
+interface ProgressState {
+  totalSentences: number;
+  completedSentences: number;
+  totalPages: number; // Keep for estimation/display if needed
+  currentPage: number; // Keep for estimation/display if needed
+  totalBatches: number; // Added
+  completedBatches: number; // Added
+  status: 'processing' | 'completed' | 'error' | 'partial_error'; // Added 'partial_error'
+  limitedMode?: boolean;
+  processedPages?: number;
+  totalPdfPages?: number;
+}
+// --- End Interface ---
+
+// --- Define Global Structure (Optional but helps TS) ---
+declare global {
+  var translationProgress: { [key: string]: ProgressState };
+}
+// --- End Global Structure ---
+
 // Función para asegurar que existe un directorio
 async function ensureDir(dirPath: string) {
   if (!existsSync(dirPath)) {
@@ -12,10 +33,21 @@ async function ensureDir(dirPath: string) {
   }
 }
 
-// Función para traducir texto - CON RETRASOS DE REINTENTO
+// --- Define a custom error (optional but good practice) ---
+class HeadersTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'HeadersTimeoutError';
+    this.code = 'HEADERS_TIMEOUT'; // Add a code for easy checking
+  }
+  code: string;
+}
+// --- End custom error ---
+
+// Función para traducir texto - CON RETRASOS DE REINTENTO y SEÑAL DE TIMEOUT
 async function translateWithHuggingFace(texts: string[]): Promise<string[]> {
-  const maxRetries = 15; // Número máximo de reintentos
-  const retryDelay = 2000; // Retraso estándar entre reintentos (2 segundos)
+  const maxRetries = 15;
+  const retryDelay = 2000;
   let attempt = 0;
 
   while (attempt < maxRetries) {
@@ -35,7 +67,7 @@ async function translateWithHuggingFace(texts: string[]): Promise<string[]> {
         headers['Authorization'] = `Bearer ${apiToken}`;
       }
 
-      console.log(`Enviando solicitud a Hugging Face (Intento ${attempt}/${maxRetries})`, { apiUrl, texts: texts.slice(0, 2) });
+      console.log(`Enviando solicitud a Hugging Face (Intento ${attempt}/${maxRetries}, Tamaño Lote: ${texts.length})`, { apiUrl, texts: texts.slice(0, 2) });
       const response = await fetch(apiUrl, {
         method: 'POST',
         headers,
@@ -89,8 +121,16 @@ async function translateWithHuggingFace(texts: string[]): Promise<string[]> {
         console.warn('Formato de respuesta inesperado:', result);
         throw new Error(`Formato de respuesta inesperado de la API: ${JSON.stringify(result)}`);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error(`Error durante la traducción con Hugging Face (Intento ${attempt}/${maxRetries}):`, error);
+
+      // --- CHECK FOR HEADERS TIMEOUT ---
+      if (error.cause?.code === 'UND_ERR_HEADERS_TIMEOUT') {
+        console.warn(`Headers Timeout detectado (Intento ${attempt}/${maxRetries}).`);
+        // Throw specific error to signal the caller to reduce batch size
+        throw new HeadersTimeoutError(`Headers timeout occurred on attempt ${attempt}`);
+      }
+      // --- END CHECK ---
 
       if (attempt >= maxRetries) {
         console.error('Se agotaron los reintentos para la traducción después de un error.');
@@ -381,22 +421,27 @@ export async function POST(req: NextRequest) {
           status: 'processing',
           limitedMode: CONFIG.limitedMode,
           processedPages: CONFIG.limitedMode ? Math.min(CONFIG.maxPages, totalPages) : totalPages,
-          totalPdfPages: totalPages
+          totalPdfPages: totalPages,
+          totalBatches: Math.ceil(originalSentenceCount / 25),
+          completedBatches: 0
         };
 
         console.log(`Progreso inicializado para sesión ${sessionId}:`, global.translationProgress[sessionId]);
       }
 
       const translatedSentences: Array<{ original: string; translation: string }> = [];
-      const batchSize = 25;
+      const initialBatchSize = 25;
+      const minBatchSize = 5;
+      let currentBatchSize = initialBatchSize;
+      let i = 0;
+      let batchCounter = 0;
 
-      for (let i = 0; i < cleanedSentences.length; i += batchSize) {
-        const batch = cleanedSentences.slice(i, i + batchSize);
-        const currentBatchNumber = Math.floor(i / batchSize) + 1;
+      while (i < cleanedSentences.length) {
+        batchCounter++;
+        const batch = cleanedSentences.slice(i, i + currentBatchSize);
+        console.log(`Procesando Lote #${batchCounter} (Índice ${i}, Tamaño ${batch.length})...`);
 
         try {
-          console.log(`Traduciendo lote ${currentBatchNumber}...`);
-
           const results = await translateWithHuggingFace(batch);
 
           for (let j = 0; j < batch.length; j++) {
@@ -417,15 +462,31 @@ export async function POST(req: NextRequest) {
               }
             }
           }
-        } catch (batchError) {
-          console.error(`Error definitivo al traducir el lote ${currentBatchNumber}:`, batchError);
-          translationErrorOccurred = true;
-          batchErrorMessage = batchError instanceof Error ? batchError.message : String(batchError);
-          console.log("Deteniendo el bucle de traducción debido a un error. Se generará un PDF parcial.");
+
           if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
-             global.translationProgress[sessionId].status = 'error';
+            global.translationProgress[sessionId].completedBatches = batchCounter;
           }
-          break;
+
+          i += batch.length;
+          currentBatchSize = initialBatchSize;
+
+        } catch (batchError: any) {
+          if (batchError instanceof HeadersTimeoutError || batchError.code === 'HEADERS_TIMEOUT') {
+            console.warn(`Headers Timeout Error recibido para el lote en índice ${i}. Reduciendo tamaño de lote.`);
+            const oldBatchSize = currentBatchSize;
+            currentBatchSize = Math.max(minBatchSize, Math.floor(currentBatchSize / 2));
+            console.log(`Tamaño de lote reducido de ${oldBatchSize} a ${currentBatchSize}. Reintentando el mismo lote...`);
+            await new Promise(resolve => setTimeout(resolve, 500));
+          } else {
+            console.error(`Error definitivo al traducir el lote en índice ${i}:`, batchError);
+            translationErrorOccurred = true;
+            batchErrorMessage = batchError instanceof Error ? batchError.message : String(batchError);
+            console.log("Deteniendo el bucle de traducción debido a un error definitivo. Se generará un PDF parcial.");
+            if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
+              global.translationProgress[sessionId].status = 'partial_error';
+            }
+            break;
+          }
         }
       }
 
@@ -636,8 +697,8 @@ export async function POST(req: NextRequest) {
       if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
         if (!translationErrorOccurred) {
            global.translationProgress[sessionId].status = 'completed';
+           global.translationProgress[sessionId].completedBatches = batchCounter;
         }
-        // Total pages in the generated doc (metadata + content)
         global.translationProgress[sessionId].totalPages = translatedPdfDoc.getPageCount();
       }
 
