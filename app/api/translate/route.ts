@@ -33,16 +33,14 @@ async function ensureDir(dirPath: string) {
   }
 }
 
-// --- Define a custom error (optional but good practice) ---
 class HeadersTimeoutError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'HeadersTimeoutError';
-    this.code = 'HEADERS_TIMEOUT'; // Add a code for easy checking
+    this.code = 'HEADERS_TIMEOUT'; 
   }
   code: string;
 }
-// --- End custom error ---
 
 // Función para traducir texto - CON RETRASOS DE REINTENTO y SEÑAL DE TIMEOUT
 async function translateWithHuggingFace(texts: string[]): Promise<string[]> {
