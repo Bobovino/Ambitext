@@ -54,29 +54,32 @@ export default function BooksPage() {
   return (
     <main className="flex min-h-screen flex-col items-center p-6 md:p-12 bg-background text-foreground">
       <div className="w-full max-w-4xl">
-        <h1 className="text-4xl font-bold mb-4 text-center text-primary">
+        <h1 className="text-4xl font-bold mb-4 text-center text-stone-200">
           Biblioteca Bilingüe
         </h1>
         <p className="text-lg text-gray-300 mb-8 text-center">
           Descarga libros clásicos con traducción Alemán-Español frase a frase.
         </p>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 bg-[#333333] p-6 rounded-lg shadow-lg min-h-[80dvh] ">
           {availableBooks.length > 0 ? (
             availableBooks.map((book) => (
-              <div key={book.id} className="bg-card rounded-lg shadow-lg p-6 flex flex-col justify-between border border-border">
+              <div
+                key={book.id}
+                className="bg-stone-800 rounded-lg shadow-lg p-6 flex flex-col justify-between border border-stone-900 h-[25dvh]"
+              >
                 <div>
-                  <h2 className="text-xl font-semibold mb-1 text-card-foreground">{book.title}</h2>
-                  <p className="text-sm text-muted-foreground mb-3">por {book.author}</p>
-                  <p className="text-sm text-card-foreground mb-4">{book.description || 'Traducción bilingüe frase a frase.'}</p>
+                  <h2 className="text-xl font-semibold mb-1 text-stone-100">{book.title}</h2>
+                  <p className="text-sm text-stone-400 mb-3">{book.author}</p>
+                  <p className="text-sm text-stone-300 mb-4">{book.description || 'Traducción bilingüe frase a frase.'}</p>
                 </div>
                 <a
-                  href={`/books/${book.filename}`} // Enlace directo al archivo en /public/books/
-                  download={book.filename} // Sugiere el nombre de archivo para la descarga
-                  className="btn-secondary mt-4 text-center"
+                  href={`/books/${book.filename}`}
+                  download={book.filename}
+                  className="bg-stone-600 hover:bg-stone-700 text-stone-100 font-bold py-2 px-4 rounded mt-4 text-center transition duration-150 ease-in-out"
                   aria-label={`Descargar ${book.title}`}
                 >
-                  Descargar ({book.languagePair})
+                  Descargar {/* ({book.languagePair}) */}
                 </a>
               </div>
             ))
