@@ -140,7 +140,7 @@ export default function TranslationProgress({ sessionId, onComplete }: ProgressP
         </div>
       </div>
       
-      <div>
+     {/*  <div>
         <div className="flex justify-between text-xs mb-1">
           <span>Páginas</span>
           <span>{progress.currentPage} / {progress.totalPages}</span>
@@ -151,7 +151,7 @@ export default function TranslationProgress({ sessionId, onComplete }: ProgressP
             style={{ width: `${pagePercentage}%` }} 
           />
         </div>
-      </div>
+      </div> */}
       
       <p className="text-sm text-center mt-1">
         {progress.status === 'completed' 
