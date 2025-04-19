@@ -110,7 +110,6 @@ export default function Translate() {
             <p className="font-medium">⚠️ Modo de desarrollo</p>
             <p className="mt-1">
               La aplicación está procesando solo las primeras páginas del PDF
-              para conservar el límite gratuito de DeepL.
             </p>
           </div>
         ) : (
