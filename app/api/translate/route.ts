@@ -42,6 +42,94 @@ class HeadersTimeoutError extends Error {
   code: string;
 }
 
+class EasyNMTProcessingError extends Error {
+  constructor(message: string, public httpStatus?: number) { // La declaración 'public' aquí es suficiente
+    super(message);
+    this.name = 'EasyNMTProcessingError';
+  }
+}
+
+// --- NUEVA FUNCIÓN PARA TRADUCIR CON EASYNMT ---
+async function translateWithEasyNMT(texts: string[]): Promise<string[]> {
+  const maxRetries = 10; // Menos reintentos para local
+  const retryDelay = 1000;
+  let attempt = 0;
+  const apiUrl = process.env.EASYNMT_API_URL || 'http://localhost:24080';
+  const targetLang = process.env.EASYNMT_TARGET_LANG || 'es'; // Idioma destino
+
+  while (attempt < maxRetries) {
+    attempt++;
+    try {
+      console.log(`Enviando solicitud a EasyNMT (Intento ${attempt}/${maxRetries}, Lote: ${texts.length})`, { apiUrl, targetLang, texts: texts.slice(0, 2) });
+
+      const response = await fetch(`${apiUrl}/translate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'accept': 'application/json' // Añadido por si acaso
+        },
+        body: JSON.stringify({
+          text: texts, 
+          target_lang: targetLang,
+          source_lang: process.env.EASYNMT_SOURCE_LANG || 'de', // Opcional: especificar idioma origen si se sabe
+          perform_sentence_splitting: false // Ya dividimos antes
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`Respuesta de error de EasyNMT (Intento ${attempt}/${maxRetries}):`, response.status, response.statusText, errorText);
+
+        // --- MODIFICACIÓN: Lanzar error 5xx INMEDIATAMENTE ---
+        if (response.status === 503 || response.status >= 500) {
+           // Lanzar error específico INMEDIATAMENTE para que el llamador (POST) reduzca el lote
+           throw new EasyNMTProcessingError(`Error ${response.status} en la API de EasyNMT: ${errorText}`, response.status);
+        }
+        // --- FIN MODIFICACIÓN ---
+
+        // Para otros errores (4xx), lanzar error genérico inmediatamente (sin reintentos internos)
+        throw new Error(`Error en la API de EasyNMT: ${response.status} ${response.statusText} - ${errorText}`);
+      }
+
+      const result = await response.json();
+      console.log('Respuesta recibida de EasyNMT:', result);
+
+      if (result && Array.isArray(result.translated)) {
+        console.log('Traducciones extraídas de EasyNMT:', result.translated.slice(0, 2));
+        // Asegurarse de que la longitud coincida con la entrada
+        if (result.translated.length !== texts.length) {
+            console.warn(`Advertencia: El número de traducciones (${result.translated.length}) no coincide con el número de textos enviados (${texts.length}).`);
+            // Podrías intentar rellenar con placeholders o lanzar un error más específico
+            // Por ahora, devolvemos lo que tenemos, podría causar problemas más adelante.
+        }
+        return result.translated.map((t: any) => String(t || '')); // Convertir a string y manejar null/undefined
+      } else {
+        console.warn('Formato de respuesta inesperado de EasyNMT:', result);
+        throw new EasyNMTProcessingError(`Formato de respuesta inesperado de EasyNMT: ${JSON.stringify(result)}`);
+      }
+
+    } catch (error: any) {
+      console.error(`Error durante la traducción con EasyNMT (Intento ${attempt}/${maxRetries}):`, error);
+
+      // --- MANTENER REINTENTOS SOLO PARA ERRORES DE CONEXIÓN ---
+      // Solo reintentar aquí si es un error de conexión (ej. Docker no responde)
+      if ((error.code === 'ECONNREFUSED' || error.message?.includes('fetch failed')) && attempt < maxRetries) {
+          console.log(`Error de conexión con EasyNMT. Reintentando en ${retryDelay / 1000} segundos...`);
+          await new Promise(resolve => setTimeout(resolve, retryDelay));
+          continue; // Reintentar solo si es error de conexión
+      }
+      // --- FIN REINTENTOS DE CONEXIÓN ---
+
+      // Si no es error de conexión o se agotaron reintentos, relanzar para que POST lo maneje
+      // Si era un EasyNMTProcessingError (5xx), ya se lanzó desde el try block anterior
+      throw error;
+    }
+  }
+  // Si el bucle termina sin devolver, algo fue mal
+  throw new EasyNMTProcessingError(`Se agotaron los reintentos (${maxRetries}) para la traducción con EasyNMT (fin inesperado).`);
+}
+// --- FIN FUNCIÓN EASYNMT ---
+
 // Función para traducir texto - CON RETRASOS DE REINTENTO y SEÑAL DE TIMEOUT
 async function translateWithHuggingFace(texts: string[]): Promise<string[]> {
   const maxRetries = 15;
@@ -298,12 +386,21 @@ export async function POST(req: NextRequest) {
   let sessionId: string | null = null;
   let originalFileBuffer: Buffer | null = null;
 
+  // --- OBTENER PROVEEDOR DE TRADUCCIÓN ---
+  const translationProvider = process.env.TRANSLATION_PROVIDER || 'huggingface';
+  console.log(`Usando proveedor de traducción: ${translationProvider}`);
+  // --- FIN OBTENER PROVEEDOR ---
+
   try {
-    const apiUrl = process.env.HF_API_URL;
-    if (!apiUrl) {
-      console.error('Error: HF_API_URL no está configurada en las variables de entorno');
-      return NextResponse.json({ error: 'Error de configuración del servidor' }, { status: 500 });
+    // --- VALIDACIÓN INICIAL BASADA EN PROVEEDOR ---
+    if (translationProvider === 'huggingface' && !process.env.HF_API_URL) {
+      console.error('Error: HF_API_URL no está configurada para el proveedor Hugging Face');
+      return NextResponse.json({ error: 'Error de configuración del servidor (HF)' }, { status: 500 });
     }
+    if (translationProvider === 'easynmt' && !process.env.EASYNMT_API_URL) {
+      console.warn('Advertencia: EASYNMT_API_URL no está configurada, usando default http://localhost:24080');
+    }
+    // --- FIN VALIDACIÓN ---
 
     const uploadsDir = join(process.cwd(), 'uploads')
     await ensureDir(uploadsDir)
@@ -428,7 +525,7 @@ export async function POST(req: NextRequest) {
       }
 
       const translatedSentences: Array<{ original: string; translation: string }> = [];
-      const initialBatchSize = 25;
+      const initialBatchSize = translationProvider === 'easynmt' ? 50 : 25; // EasyNMT podría manejar lotes más grandes
       const minBatchSize = 5;
       let currentBatchSize = initialBatchSize;
       let i = 0;
@@ -437,13 +534,32 @@ export async function POST(req: NextRequest) {
       while (i < cleanedSentences.length) {
         batchCounter++;
         const batch = cleanedSentences.slice(i, i + currentBatchSize);
-        console.log(`Procesando Lote #${batchCounter} (Índice ${i}, Tamaño ${batch.length})...`);
+        console.log(`Procesando Lote #${batchCounter} (Índice ${i}, Tamaño ${batch.length}) con ${translationProvider}...`);
 
         try {
-          const results = await translateWithHuggingFace(batch);
+          // --- LLAMADA CONDICIONAL A LA FUNCIÓN DE TRADUCCIÓN ---
+          let results: string[];
+          if (translationProvider === 'easynmt') {
+            results = await translateWithEasyNMT(batch);
+          } else { // Por defecto o si es 'huggingface'
+            results = await translateWithHuggingFace(batch);
+          }
+          // --- FIN LLAMADA CONDICIONAL ---
+
+          // Asegurarse de que results tenga la misma longitud que batch
+          if (results.length !== batch.length) {
+             console.warn(`Discrepancia en tamaño de lote: entrada=${batch.length}, salida=${results.length}. Rellenando con placeholders.`);
+             // Rellenar 'results' si es más corto, o truncar si es más largo
+             const correctedResults = new Array(batch.length).fill('(Error de tamaño de lote)');
+             for(let k=0; k < Math.min(results.length, batch.length); k++) {
+                 correctedResults[k] = results[k];
+             }
+             results = correctedResults;
+          }
+
 
           for (let j = 0; j < batch.length; j++) {
-            const translationText = results[j] || '(No translation)';
+            const translationText = results[j] || '(No translation)'; // Usar placeholder si falta
             const sanitizedTranslation = sanitizeText(translationText);
             
             translatedSentences.push({ 
@@ -466,25 +582,62 @@ export async function POST(req: NextRequest) {
           }
 
           i += batch.length;
-          currentBatchSize = initialBatchSize;
+          // Resetear tamaño de lote si fue exitoso (especialmente si se redujo por error)
+          currentBatchSize = initialBatchSize; 
 
         } catch (batchError: any) {
-          if (batchError instanceof HeadersTimeoutError || batchError.code === 'HEADERS_TIMEOUT') {
-            console.warn(`Headers Timeout Error recibido para el lote en índice ${i}. Reduciendo tamaño de lote.`);
+          // --- MANEJO DE ERRORES ESPECIALIZADO ---
+          if (translationProvider === 'huggingface' && (batchError instanceof HeadersTimeoutError || batchError.code === 'HEADERS_TIMEOUT')) {
+            // Lógica específica de Hugging Face para HeadersTimeout
+            console.warn(`Headers Timeout Error (HF) recibido para el lote en índice ${i}. Reduciendo tamaño de lote.`);
             const oldBatchSize = currentBatchSize;
             currentBatchSize = Math.max(minBatchSize, Math.floor(currentBatchSize / 2));
             console.log(`Tamaño de lote reducido de ${oldBatchSize} a ${currentBatchSize}. Reintentando el mismo lote...`);
-            await new Promise(resolve => setTimeout(resolve, 500));
-          } else {
-            console.error(`Error definitivo al traducir el lote en índice ${i}:`, batchError);
+            await new Promise(resolve => setTimeout(resolve, 500)); // Pequeña pausa antes de reintentar
+            // No incrementar 'i', reintentar el mismo lote con tamaño reducido
+          
+          // --- NUEVA LÓGICA PARA EASYNMT 5xx ---
+          } else if (translationProvider === 'easynmt' && batchError instanceof EasyNMTProcessingError && batchError.httpStatus && batchError.httpStatus >= 500) { // Usar httpStatus
+             console.warn(`Error ${batchError.httpStatus} (EasyNMT) recibido para el lote en índice ${i}. Reduciendo tamaño de lote.`); // Usar httpStatus
+             const oldBatchSize = currentBatchSize;
+             currentBatchSize = Math.max(minBatchSize, Math.floor(currentBatchSize / 2));
+             console.log(`Tamaño de lote reducido de ${oldBatchSize} a ${currentBatchSize}. Reintentando el mismo lote...`);
+             if (currentBatchSize === oldBatchSize && oldBatchSize === minBatchSize) {
+                // Si ya estamos en el tamaño mínimo y sigue fallando, es irrecuperable
+                console.error(`Error ${batchError.httpStatus} persistente en EasyNMT incluso con tamaño de lote mínimo (${minBatchSize}). Abortando.`); // Usar httpStatus
+                translationErrorOccurred = true;
+                batchErrorMessage = `Error ${batchError.httpStatus} persistente en EasyNMT: ${batchError.message}`; // Usar httpStatus
+                if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
+                  global.translationProgress[sessionId].status = 'partial_error';
+                }
+                break; // Detener el bucle
+             }
+             await new Promise(resolve => setTimeout(resolve, 500)); // Pequeña pausa
+             // No incrementar 'i', reintentar el mismo lote con tamaño reducido
+          // --- FIN NUEVA LÓGICA ---
+
+          } else if (translationProvider === 'easynmt' && batchError.code === 'ECONNREFUSED') {
+             // Error específico de EasyNMT si no se puede conectar (sin reducción de lote)
+             console.error(`Error de conexión con EasyNMT en el lote ${i}. Asegúrate de que el contenedor Docker está en ejecución y accesible en ${process.env.EASYNMT_API_URL}.`);
+             translationErrorOccurred = true;
+             batchErrorMessage = `No se pudo conectar al servicio local EasyNMT. (${batchError.message})`;
+             if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
+               global.translationProgress[sessionId].status = 'error'; // Error irrecuperable
+             }
+             break; // Detener el proceso
+          }
+          else {
+            // Error genérico o irrecuperable para cualquier proveedor
+            console.error(`Error definitivo al traducir el lote en índice ${i} con ${translationProvider}:`, batchError);
             translationErrorOccurred = true;
             batchErrorMessage = batchError instanceof Error ? batchError.message : String(batchError);
             console.log("Deteniendo el bucle de traducción debido a un error definitivo. Se generará un PDF parcial.");
             if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
               global.translationProgress[sessionId].status = 'partial_error';
             }
-            break;
+            break; // Detener el bucle
           }
+          // --- FIN MANEJO DE ERRORES ---
         }
       }
 
@@ -548,7 +701,7 @@ export async function POST(req: NextRequest) {
          metaY -= metaLineHeight * 0.5; // Smaller gap if no error
       }
 
-      metadataPage.drawText(`Traducido con Hugging Face Inference API`, {
+      metadataPage.drawText(`Traducido con: ${translationProvider === 'easynmt' ? 'EasyNMT (Local)' : 'Hugging Face API'}`, {
         x: metaX, y: metaY, size: metaInfoSize, font: helvetica
       });
       metaY -= metaLineHeight * 2;
