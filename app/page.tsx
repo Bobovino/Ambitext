@@ -66,7 +66,7 @@ export default function BooksPage() {
             availableBooks.map((book) => (
               <div
                 key={book.id}
-                className="bg-stone-800 rounded-lg shadow-lg p-6 flex flex-col justify-between border border-stone-900 h-[25dvh]"
+                className="bg-stone-800 rounded-lg shadow-lg p-6 flex flex-col justify-between border border-stone-900 h-[28dvh]"
               >
                 <div>
                   <h2 className="text-xl font-semibold mb-1 text-stone-100">{book.title}</h2>
