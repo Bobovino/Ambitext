@@ -71,7 +71,7 @@ async function translateWithEasyNMT(texts: string[]): Promise<string[]> {
         body: JSON.stringify({
           text: texts, 
           target_lang: targetLang,
-          source_lang: 'de', // Opcional: especificar idioma origen si se sabe
+          source_lang: process.env.EASYNMT_SOURCE_LANG || 'de', // Opcional: especificar idioma origen si se sabe
           perform_sentence_splitting: false // Ya dividimos antes
         }),
       });
