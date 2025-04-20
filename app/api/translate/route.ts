@@ -584,11 +584,31 @@ export async function POST(req: NextRequest) {
         }
 
         const sentencesToTranslate = sentenceInfos.map(info => sanitizeText(info.text));
-        let translations: string[];
-        if (translationProvider === 'easynmt') {
-          translations = await translateWithEasyNMT(sentencesToTranslate, sourceLang, targetLang);
-        } else {
-          translations = await translateWithHuggingFace(sentencesToTranslate, sourceLang, targetLang);
+        let translations: string[] = [];
+        const initialBatchSize = translationProvider === 'easynmt' ? 50 : 25;
+        const minBatchSize = 3;
+        let currentBatchSize = initialBatchSize;
+        let i = 0;
+        while (i < sentencesToTranslate.length) {
+          const batchTexts = sentencesToTranslate.slice(i, i + currentBatchSize);
+          try {
+            let results: string[];
+            if (translationProvider === 'easynmt') {
+              results = await translateWithEasyNMT(batchTexts, sourceLang, targetLang);
+            } else {
+              results = await translateWithHuggingFace(batchTexts, sourceLang, targetLang);
+            }
+            translations.push(...results);
+            i += batchTexts.length;
+            currentBatchSize = initialBatchSize;
+          } catch (batchError: any) {
+            const oldBatchSize = currentBatchSize;
+            currentBatchSize = Math.max(minBatchSize, Math.floor(currentBatchSize / 2));
+            if (currentBatchSize === oldBatchSize && oldBatchSize === minBatchSize) {
+              throw batchError;
+            }
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
         }
 
         // 3. Añadir tantas páginas de traducción como sean necesarias
