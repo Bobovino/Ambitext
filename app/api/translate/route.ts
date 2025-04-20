@@ -50,12 +50,11 @@ class EasyNMTProcessingError extends Error {
 }
 
 // --- NUEVA FUNCIÓN PARA TRADUCIR CON EASYNMT ---
-async function translateWithEasyNMT(texts: string[]): Promise<string[]> {
+async function translateWithEasyNMT(texts: string[], sourceLang: string, targetLang: string): Promise<string[]> {
   const maxRetries = 10; // Menos reintentos para local
   const retryDelay = 1000;
   let attempt = 0;
   const apiUrl = process.env.EASYNMT_API_URL || 'http://localhost:24080';
-  const targetLang = process.env.EASYNMT_TARGET_LANG || 'es'; // Idioma destino
 
   while (attempt < maxRetries) {
     attempt++;
@@ -71,7 +70,7 @@ async function translateWithEasyNMT(texts: string[]): Promise<string[]> {
         body: JSON.stringify({
           text: texts, 
           target_lang: targetLang,
-          source_lang: process.env.EASYNMT_SOURCE_LANG || 'de', // Opcional: especificar idioma origen si se sabe
+          source_lang: sourceLang, // Usar idioma origen del formData
           perform_sentence_splitting: false // Ya dividimos antes
         }),
       });
@@ -131,7 +130,7 @@ async function translateWithEasyNMT(texts: string[]): Promise<string[]> {
 // --- FIN FUNCIÓN EASYNMT ---
 
 // Función para traducir texto - CON RETRASOS DE REINTENTO y SEÑAL DE TIMEOUT
-async function translateWithHuggingFace(texts: string[]): Promise<string[]> {
+async function translateWithHuggingFace(texts: string[], sourceLang: string, targetLang: string): Promise<string[]> {
   const maxRetries = 15;
   const retryDelay = 2000;
   let attempt = 0;
@@ -161,7 +160,9 @@ async function translateWithHuggingFace(texts: string[]): Promise<string[]> {
           inputs: texts,
           options: {
             wait_for_model: true,
-          }
+          },
+          source_lang: sourceLang, // Usar idioma origen del formData
+          target_lang: targetLang, // Usar idioma destino del formData
         }),
       });
 
@@ -458,10 +459,19 @@ export async function POST(req: NextRequest) {
     const formData = await req.formData()
     const pdfFile = formData.get('pdfFile') as File | null
     sessionId = formData.get('sessionId') as string | null
+    // --- NUEVO: Leer idiomas del formData ---
+    const sourceLang = formData.get('sourceLang') as string | null;
+    const targetLang = formData.get('targetLang') as string | null;
+    // ----------------------------------------
 
     if (!pdfFile) {
       return NextResponse.json({ error: 'No se ha subido ningún archivo' }, { status: 400 })
     }
+    // --- NUEVO: Validar idiomas ---
+    if (!sourceLang || !targetLang) {
+      return NextResponse.json({ error: 'Faltan los idiomas de origen o destino' }, { status: 400 });
+    }
+    // ------------------------------
 
     const bytes = await pdfFile.arrayBuffer()
     originalFileBuffer = Buffer.from(bytes); // Keep original buffer
@@ -559,9 +569,10 @@ export async function POST(req: NextRequest) {
       try {
         let results: string[];
         if (translationProvider === 'easynmt') {
-          results = await translateWithEasyNMT(batchTexts);
+          // PASA LOS IDIOMAS
+          results = await translateWithEasyNMT(batchTexts, sourceLang, targetLang);
         } else {
-          results = await translateWithHuggingFace(batchTexts);
+          results = await translateWithHuggingFace(batchTexts, sourceLang, targetLang);
         }
 
         if (results.length !== batchTexts.length) {
@@ -622,6 +633,10 @@ export async function POST(req: NextRequest) {
     const helveticaOblique = await translatedPdfDoc.embedFont(StandardFonts.HelveticaOblique);
     const helveticaBold = await translatedPdfDoc.embedFont(StandardFonts.HelveticaBold);
 
+    // Define los colores para los idiomas seleccionados
+    const sourceColor = rgb(0.1, 0.3, 0.6); // azul para el idioma origen
+    const targetColor = rgb(0, 0, 0);       // negro para el idioma destino
+
     const metadataPage = translatedPdfDoc.addPage([595, 842]);
     let metaY = metadataPage.getHeight() - 70;
     const metaX = 50;
@@ -654,12 +669,12 @@ export async function POST(req: NextRequest) {
 
     if (translationErrorOccurred) { metaY -= metaLineHeight * 1.5; } else { metaY -= metaLineHeight * 0.5; }
     metadataPage.drawText(`Traducido con: ${translationProvider === 'easynmt' ? 'EasyNMT (Local)' : 'Hugging Face API'}`, { x: metaX, y: metaY, size: metaInfoSize, font: helvetica });
-    metaY -= metaLineHeight * 2;
-    const germanColor = rgb(0.1, 0.3, 0.6);
-    const spanishColor = rgb(0, 0, 0);
-    metadataPage.drawText("DE: texto original (azul)", { x: metaX, y: metaY, size: metaLegendSize, font: helveticaBold, color: germanColor });
+    metaY -= metaLineHeight;
+    metadataPage.drawText(`Traducción: ${sourceLang.toUpperCase()} → ${targetLang.toUpperCase()}`, { x: metaX, y: metaY, size: metaInfoSize, font: helvetica });
+    metaY -= metaLineHeight;
+    metadataPage.drawText(`${sourceLang.toUpperCase()}: texto original (azul)`, { x: metaX, y: metaY, size: metaLegendSize, font: helveticaBold, color: sourceColor });
     metaY -= metaLineHeight * 0.8;
-    metadataPage.drawText("ES: traducción al español (negro)", { x: metaX, y: metaY, size: metaLegendSize, font: helveticaOblique, color: spanishColor });
+    metadataPage.drawText(`${targetLang.toUpperCase()}: traducción (negro)`, { x: metaX, y: metaY, size: metaLegendSize, font: helveticaOblique, color: targetColor });
 
     let contentCurrentPage = translatedPdfDoc.addPage([595, 842]);
     let contentPageCount = 2;
@@ -668,8 +683,8 @@ export async function POST(req: NextRequest) {
     const lineHeight = fontSize * 1.2;
     let y = height - 50;
 
-    const germanTextOptions = { size: fontSize, color: germanColor, font: helveticaBold };
-    const spanishTextOptions = { size: fontSize, color: spanishColor, font: helveticaOblique };
+    const sourceTextOptions = { size: fontSize, color: sourceColor, font: helveticaBold };
+    const targetTextOptions = { size: fontSize, color: targetColor, font: helveticaOblique };
     const paragraphSpacing = 12; // Aumentar un poco el espacio general post-párrafo
     const separatorLineColor = rgb(0.3, 0.3, 0.3); // Más oscuro (gris oscuro)
     const separatorMargin = 40; // Margen más pequeño para línea más larga
@@ -742,7 +757,7 @@ export async function POST(req: NextRequest) {
 
         const yBeforePair = y;
 
-        let drawResult = drawWrappedText(item.original, { x: 50, y, ...germanTextOptions });
+        let drawResult = drawWrappedText(item.original, { x: 50, y, ...sourceTextOptions });
         y = drawResult.y;
         if (drawResult.pageAdvanced) {
           y = contentCurrentPage.getHeight() - 50 - (yBeforePair - drawResult.y);
@@ -751,7 +766,7 @@ export async function POST(req: NextRequest) {
         y -= 5;
 
         const yBeforeTranslation = y;
-        drawResult = drawWrappedText(item.translation, { x: 50, y, ...spanishTextOptions });
+        drawResult = drawWrappedText(item.translation, { x: 50, y, ...targetTextOptions });
         y = drawResult.y;
         if (drawResult.pageAdvanced) {
           y = contentCurrentPage.getHeight() - 50 - (yBeforeTranslation - drawResult.y);

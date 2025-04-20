@@ -124,7 +124,7 @@ export default function FileDropZone({ onFileDrop, accept = '.pdf,.epub,.mobi', 
         ) : (
           <>
             <p className="font-medium">Arrastra un archivo aquí o haz clic para seleccionarlo</p>
-            <p className="text-sm text-gray-400 mt-1">Archivos PDF, EPUB y MOBI</p>
+            <p className="text-sm text-gray-400 mt-1">Archivos PDF</p>
           </>
         )}
       </div>
