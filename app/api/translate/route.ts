@@ -232,79 +232,142 @@ async function translateWithHuggingFace(texts: string[]): Promise<string[]> {
   throw new Error(`Se agotaron los reintentos (${maxRetries}) para la traducción.`);
 }
 
-// Función mejorada para dividir el texto en frases más pequeñas
-function splitIntoSentences(text: string): string[] {
-  const paragraphs = text.split(/\n\s*\n/);
-  const sentences: string[] = [];
-
-  for (const paragraph of paragraphs) {
-    if (paragraph.trim().length === 0) continue;
-
-    const sentenceRegex = /([^.!?]+[.!?]+\s*)/g;
-    const matches = paragraph.match(sentenceRegex);
-
-    if (matches && matches.length > 0) {
-      sentences.push(...matches.map(s => s.trim()).filter(s => s.length > 0));
-    } else {
-      sentences.push(paragraph.trim());
-    }
-  }
-
-  const result: string[] = [];
-  for (const sentence of sentences) {
-    if (sentence.length > 200) {
-      const chunks = splitLongSentence(sentence);
-      result.push(...chunks);
-    } else {
-      result.push(sentence);
-    }
-  }
-
-  return result;
+// Interfaz para el resultado de splitIntoSentences
+interface SentenceInfo {
+  text: string;
+  isEndOfParagraph: boolean;
 }
 
-// Función para dividir frases muy largas en chunks más manejables
+// Función mejorada para dividir el texto y marcar fines de párrafo
+function splitIntoSentences(text: string): SentenceInfo[] {
+  const paragraphs = text.split(/\n\s*\n/); // Dividir en párrafos primero
+  const sentenceInfos: SentenceInfo[] = [];
+  // Regex para URLs (simplificada, ajusta si es necesario)
+  const urlRegex = /(https?:\/\/[^\s]+|[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/g;
+
+  for (const paragraph of paragraphs) {
+    const trimmedParagraph = paragraph.trim();
+    if (trimmedParagraph.length === 0) continue;
+
+    // Usar regex para dividir el párrafo en frases
+    // Regex mejorada para capturar mejor finales de frase y evitar divisiones incorrectas
+    const sentenceRegex = /[^.!?…]+(?:[.!?…](?![.?!"”’']?\s*[a-zäöüß])|\n|$)+/g;
+    // --- CORRECCIÓN: Asegurar tipo string[] ---
+    const matchResult = trimmedParagraph.match(sentenceRegex);
+    let potentialSentences: string[] = matchResult ?? [trimmedParagraph]; // Si no hay match, el párrafo es una "frase"
+    // --- FIN CORRECCIÓN ---
+
+    // Limpiar y filtrar frases vacías
+    potentialSentences = potentialSentences.map(s => s.trim()).filter(s => s.length > 0);
+
+    if (potentialSentences.length > 0) {
+      for (let i = 0; i < potentialSentences.length; i++) {
+        const sentence = potentialSentences[i];
+        const isLastInParagraph = (i === potentialSentences.length - 1);
+
+        // Sub-dividir frases muy largas si es necesario, intentando no romper URLs
+        if (sentence.length > 250 && !urlRegex.test(sentence)) { // No dividir si parece una URL larga
+          const chunks = splitLongSentence(sentence);
+          for (let j = 0; j < chunks.length; j++) {
+            sentenceInfos.push({
+              text: chunks[j],
+              // Solo la última parte de la frase larga dividida hereda el fin de párrafo
+              isEndOfParagraph: isLastInParagraph && (j === chunks.length - 1)
+            });
+          }
+        } else {
+          sentenceInfos.push({
+            text: sentence,
+            isEndOfParagraph: isLastInParagraph
+          });
+        }
+      }
+    }
+  }
+  return sentenceInfos;
+}
+
+// Función para dividir frases muy largas
 function splitLongSentence(longSentence: string): string[] {
-  const maxLength = 200;
+  const maxLength = 250; // Coincidir con el límite superior
   const result: string[] = [];
 
+  // Intenta dividir por comas primero si preserva mejor la estructura
   if (longSentence.includes(',')) {
     let currentChunk = '';
     const parts = longSentence.split(',');
+    let needsCommaSuffix = false; // Para añadir la coma al final del chunk si se dividió ahí
 
-    for (const part of parts) {
-      const potentialChunk = currentChunk ? `${currentChunk},${part}` : part;
+    for (let i = 0; i < parts.length; i++) {
+        const part = parts[i];
+        // Añadir la coma si el chunk anterior terminó justo antes de esta parte
+        const partWithCommaPrefix = needsCommaSuffix ? `,${part}` : part;
+        const potentialChunk = currentChunk ? `${currentChunk}${partWithCommaPrefix}` : part.trim(); // Trim inicial
 
-      if (potentialChunk.length <= maxLength) {
-        currentChunk = potentialChunk;
-      } else {
-        if (currentChunk) result.push(currentChunk + ',');
-        currentChunk = part;
-      }
+        if (potentialChunk.length <= maxLength) {
+            currentChunk = potentialChunk;
+            needsCommaSuffix = true; // La siguiente parte necesitará una coma delante si esta no es la última
+        } else {
+            // Si el chunk actual ya es demasiado largo por sí solo
+            if (currentChunk) {
+                 result.push(currentChunk.trim()); // Añadir el chunk anterior válido
+            }
+            // Manejar la parte actual que excedió el límite
+            if (part.trim().length > maxLength) {
+                // Si la parte en sí es demasiado larga, usar división por espacio
+                const subChunks = splitBySpace(part.trim(), maxLength);
+                result.push(...subChunks);
+                currentChunk = ''; // Resetear chunk
+                needsCommaSuffix = false;
+            } else {
+                currentChunk = part.trim(); // Empezar nuevo chunk con la parte actual
+                needsCommaSuffix = true;
+            }
+        }
+        // Si es la última parte, no necesitará coma después
+        if (i === parts.length - 1) {
+            needsCommaSuffix = false;
+        }
+    }
+     // Añadir el último chunk si existe
+    if (currentChunk) result.push(currentChunk.trim());
+
+    // Si la división por comas generó chunks vacíos o muy pequeños, revertir a espacio
+    if (result.some(chunk => chunk.length < 10) && result.length > 1) {
+        console.warn("División por comas generó chunks pequeños, revirtiendo a división por espacio para:", longSentence.substring(0, 50) + "...");
+        return splitBySpace(longSentence, maxLength);
     }
 
-    if (currentChunk) result.push(currentChunk);
-    return result;
-  }
+    return result.filter(c => c.length > 0); // Filtrar chunks vacíos
 
-  let remaining = longSentence;
-  while (remaining.length > maxLength) {
-    let cutPoint = maxLength;
-    while (cutPoint > 0 && remaining[cutPoint] !== ' ') {
-      cutPoint--;
+  } else {
+     // Si no hay comas, dividir por espacios
+     return splitBySpace(longSentence, maxLength);
+  }
+}
+
+// Función auxiliar para dividir por espacios
+function splitBySpace(sentence: string, maxLength: number): string[] {
+    const result: string[] = [];
+    let remaining = sentence.trim();
+    while (remaining.length > maxLength) {
+        let cutPoint = maxLength;
+        // Buscar el último espacio antes del límite
+        while (cutPoint > 0 && remaining[cutPoint] !== ' ') {
+            cutPoint--;
+        }
+        // Si no se encontró espacio, cortar en maxLength (puede romper una palabra)
+        if (cutPoint === 0) {
+            cutPoint = maxLength;
+            console.warn("Forzando corte en medio de palabra para frase larga sin espacios:", remaining.substring(0, 30) + "...");
+        }
+        result.push(remaining.substring(0, cutPoint).trim());
+        remaining = remaining.substring(cutPoint).trim();
     }
-
-    if (cutPoint === 0) cutPoint = maxLength;
-
-    result.push(remaining.substring(0, cutPoint).trim());
-    remaining = remaining.substring(cutPoint).trim();
-  }
-
-  if (remaining.length > 0) {
-    result.push(remaining);
-  }
-
-  return result;
+    if (remaining.length > 0) {
+        result.push(remaining);
+    }
+    return result.filter(c => c.length > 0);
 }
 
 // Función auxiliar para limpiar texto de caracteres problemáticos
@@ -385,23 +448,10 @@ export async function POST(req: NextRequest) {
   let filePath: string | null = null;
   let sessionId: string | null = null;
   let originalFileBuffer: Buffer | null = null;
-
-  // --- OBTENER PROVEEDOR DE TRADUCCIÓN ---
   const translationProvider = process.env.TRANSLATION_PROVIDER || 'huggingface';
   console.log(`Usando proveedor de traducción: ${translationProvider}`);
-  // --- FIN OBTENER PROVEEDOR ---
 
   try {
-    // --- VALIDACIÓN INICIAL BASADA EN PROVEEDOR ---
-    if (translationProvider === 'huggingface' && !process.env.HF_API_URL) {
-      console.error('Error: HF_API_URL no está configurada para el proveedor Hugging Face');
-      return NextResponse.json({ error: 'Error de configuración del servidor (HF)' }, { status: 500 });
-    }
-    if (translationProvider === 'easynmt' && !process.env.EASYNMT_API_URL) {
-      console.warn('Advertencia: EASYNMT_API_URL no está configurada, usando default http://localhost:24080');
-    }
-    // --- FIN VALIDACIÓN ---
-
     const uploadsDir = join(process.cwd(), 'uploads')
     await ensureDir(uploadsDir)
 
@@ -425,488 +475,384 @@ export async function POST(req: NextRequest) {
     const fileType = getFileType(originalFilename);
 
     if (fileType === 'unknown') {
-      return NextResponse.json({ error: 'Tipo de archivo no soportado. Por favor, sube un PDF, EPUB o MOBI.' }, { status: 400 })
+      return NextResponse.json({ error: 'Tipo de archivo no soportado. Por favor, sube un PDF' }, { status: 400 })
     }
 
     console.log(`Procesando archivo ${fileType}: ${originalFilename}`);
 
+    let fullText = '';
+    let totalPages = 1;
+    let pagesToProcess = 1;
+
+    if (fileType === 'pdf') {
+      const originalPdfDoc = await PDFDocument.load(originalFileBuffer);
+      totalPages = originalPdfDoc.getPageCount();
+      pagesToProcess = CONFIG.limitedMode ? Math.min(CONFIG.maxPages, totalPages) : totalPages;
+
+      const pdfjs = await import('pdf-parse');
+      const bufferToParse = CONFIG.limitedMode ? await (async () => {
+        const limitedPdfDoc = await PDFDocument.create();
+        const copiedPages = await limitedPdfDoc.copyPages(originalPdfDoc, Array.from({ length: pagesToProcess }, (_, i) => i));
+        copiedPages.forEach(page => limitedPdfDoc.addPage(page));
+        return Buffer.from(await limitedPdfDoc.save());
+      })() : originalFileBuffer!;
+      const pdfData = await pdfjs.default(bufferToParse);
+      fullText = pdfData.text;
+      console.log(`Procesando ${pagesToProcess} de ${totalPages} páginas PDF.`);
+    } else {
+      fullText = await extractTextFromFile(filePath, fileType);
+      const estimatedCharsPerPage = 2000;
+      totalPages = Math.ceil(fullText.length / estimatedCharsPerPage) || 1;
+      pagesToProcess = CONFIG.limitedMode ? Math.min(CONFIG.maxPages, totalPages) : totalPages;
+      if (CONFIG.limitedMode && totalPages > CONFIG.maxPages) {
+        const charsToKeep = pagesToProcess * estimatedCharsPerPage;
+        fullText = fullText.substring(0, charsToKeep);
+        console.log(`Procesando aprox. ${pagesToProcess} de ${totalPages} páginas estimadas (${fileType}).`);
+      } else {
+        console.log(`Procesando todo el contenido (${fileType}).`);
+      }
+    }
+
+    const sentenceInfos = splitIntoSentences(fullText);
+    console.log('--- Sentence Infos (primeros 10):', JSON.stringify(sentenceInfos.slice(0, 10), null, 2));
+
+    const sentencesToTranslate = sentenceInfos.map(info => sanitizeText(info.text));
+    const originalSentenceCount = sentencesToTranslate.length;
+    console.log(`Se procesarán ${originalSentenceCount} frases/segmentos de las ${pagesToProcess} páginas originales.`);
+
+    if (sessionId) {
+      if (typeof global.translationProgress === 'undefined') {
+        global.translationProgress = {};
+      }
+
+      global.translationProgress[sessionId] = {
+        totalSentences: originalSentenceCount,
+        completedSentences: 0,
+        totalPages: Math.ceil(originalSentenceCount / 10) || 1,
+        currentPage: 0,
+        status: 'processing',
+        limitedMode: CONFIG.limitedMode,
+        processedPages: pagesToProcess,
+        totalPdfPages: totalPages,
+        totalBatches: Math.ceil(originalSentenceCount / (translationProvider === 'easynmt' ? 50 : 25)),
+        completedBatches: 0
+      };
+
+      console.log(`Progreso inicializado para sesión ${sessionId}:`, global.translationProgress[sessionId]);
+    }
+
+    const translatedItems: Array<{ original: string; translation: string; isEndOfParagraph: boolean }> = [];
+    const initialBatchSize = translationProvider === 'easynmt' ? 50 : 25;
+    const minBatchSize = 5;
+    let currentBatchSize = initialBatchSize;
+    let i = 0;
+    let batchCounter = 0;
     let translationErrorOccurred = false;
     let batchErrorMessage = '';
 
-    try {
-      let fullText = '';
-      let totalPages = 1;
-
-      if (fileType === 'pdf') {
-        const originalPdfDoc = await PDFDocument.load(originalFileBuffer);
-        totalPages = originalPdfDoc.getPageCount();
-
-        if (CONFIG.limitedMode) {
-          const pagesToProcess = Math.min(CONFIG.maxPages, totalPages);
-
-          const limitedPdfDoc = await PDFDocument.create();
-          const copiedPages = await limitedPdfDoc.copyPages(
-            originalPdfDoc, 
-            Array.from({length: pagesToProcess}, (_, i) => i)
-          );
-
-          copiedPages.forEach(page => limitedPdfDoc.addPage(page));
-          const limitedPdfBytes = await limitedPdfDoc.save();
-
-          const pdfjs = await import('pdf-parse');
-          const pdfData = await pdfjs.default(Buffer.from(limitedPdfBytes));
-          fullText = pdfData.text;
-          console.log(`Procesando solo ${pagesToProcess} de ${totalPages} páginas totales (modo limitado)`);
-        } else {
-          const pdfjs = await import('pdf-parse');
-          const pdfData = await pdfjs.default(originalFileBuffer);
-          fullText = pdfData.text;
-          console.log(`Procesando todas las ${totalPages} páginas (modo completo)`);
-        }
-      } else {
-        console.log(`Extrayendo texto de ${fileType}...`);
-        try {
-          fullText = await extractTextFromFile(filePath, fileType);
-
-          const estimatedCharsPerPage = 2000;
-          totalPages = Math.ceil(fullText.length / estimatedCharsPerPage) || 1;
-
-          if (CONFIG.limitedMode && totalPages > CONFIG.maxPages) {
-            const charsToKeep = CONFIG.maxPages * estimatedCharsPerPage;
-            fullText = fullText.substring(0, charsToKeep);
-            console.log(`Procesando aproximadamente ${CONFIG.maxPages} de ${totalPages} páginas estimadas (modo limitado)`);
-          } else {
-            console.log(`Procesando todo el contenido del archivo ${fileType}`);
-          }
-        } catch (error) {
-          console.error(`Error al extraer texto de ${fileType}:`, error);
-          return NextResponse.json({ 
-            error: `No se pudo extraer texto del archivo ${fileType}. ${error instanceof Error ? error.message : 'Error desconocido'}` 
-          }, { status: 500 });
-        }
-      }
-
-      const sentences = splitIntoSentences(fullText);
-
-      console.log('--- Sentences BEFORE sanitization ---');
-      console.log(JSON.stringify(sentences.slice(0, 10), null, 2));
-
-      const cleanedSentences = sentences.map(sentence => sanitizeText(sentence));
-
-      console.log('--- Sentences AFTER sanitization ---');
-      console.log(JSON.stringify(cleanedSentences.slice(0, 10), null, 2));
-
-      const originalSentenceCount = cleanedSentences.length;
-
-      const pagesToProcess = CONFIG.limitedMode ? Math.min(CONFIG.maxPages, totalPages) : totalPages;
-      console.log(`Se procesarán ${originalSentenceCount} frases de las primeras ${pagesToProcess} páginas`);
-
-      const estimatedPagesCount = Math.ceil(sentences.length / 10);
-
-      if (sessionId) {
-        if (typeof global.translationProgress === 'undefined') {
-          global.translationProgress = {};
-        }
-
-        global.translationProgress[sessionId] = {
-          totalSentences: cleanedSentences.length,
-          completedSentences: 0,
-          totalPages: estimatedPagesCount || 1,
-          currentPage: 0,
-          status: 'processing',
-          limitedMode: CONFIG.limitedMode,
-          processedPages: CONFIG.limitedMode ? Math.min(CONFIG.maxPages, totalPages) : totalPages,
-          totalPdfPages: totalPages,
-          totalBatches: Math.ceil(originalSentenceCount / 25),
-          completedBatches: 0
-        };
-
-        console.log(`Progreso inicializado para sesión ${sessionId}:`, global.translationProgress[sessionId]);
-      }
-
-      const translatedSentences: Array<{ original: string; translation: string }> = [];
-      const initialBatchSize = translationProvider === 'easynmt' ? 50 : 25; // EasyNMT podría manejar lotes más grandes
-      const minBatchSize = 5;
-      let currentBatchSize = initialBatchSize;
-      let i = 0;
-      let batchCounter = 0;
-
-      while (i < cleanedSentences.length) {
-        batchCounter++;
-        const batch = cleanedSentences.slice(i, i + currentBatchSize);
-        console.log(`Procesando Lote #${batchCounter} (Índice ${i}, Tamaño ${batch.length}) con ${translationProvider}...`);
-
-        try {
-          // --- LLAMADA CONDICIONAL A LA FUNCIÓN DE TRADUCCIÓN ---
-          let results: string[];
-          if (translationProvider === 'easynmt') {
-            results = await translateWithEasyNMT(batch);
-          } else { // Por defecto o si es 'huggingface'
-            results = await translateWithHuggingFace(batch);
-          }
-          // --- FIN LLAMADA CONDICIONAL ---
-
-          // Asegurarse de que results tenga la misma longitud que batch
-          if (results.length !== batch.length) {
-             console.warn(`Discrepancia en tamaño de lote: entrada=${batch.length}, salida=${results.length}. Rellenando con placeholders.`);
-             // Rellenar 'results' si es más corto, o truncar si es más largo
-             const correctedResults = new Array(batch.length).fill('(Error de tamaño de lote)');
-             for(let k=0; k < Math.min(results.length, batch.length); k++) {
-                 correctedResults[k] = results[k];
-             }
-             results = correctedResults;
-          }
-
-
-          for (let j = 0; j < batch.length; j++) {
-            const translationText = results[j] || '(No translation)'; // Usar placeholder si falta
-            const sanitizedTranslation = sanitizeText(translationText);
-            
-            translatedSentences.push({ 
-              original: batch[j], 
-              translation: sanitizedTranslation 
-            });
-            
-            if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
-              const newCompletedCount = i + j + 1;
-              global.translationProgress[sessionId].completedSentences = newCompletedCount;
-
-              if (newCompletedCount % 10 === 0 || newCompletedCount === cleanedSentences.length) {
-                console.log(`Progreso de traducción: ${newCompletedCount}/${cleanedSentences.length} frases`);
-              }
-            }
-          }
-
-          if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
-            global.translationProgress[sessionId].completedBatches = batchCounter;
-          }
-
-          i += batch.length;
-          // Resetear tamaño de lote si fue exitoso (especialmente si se redujo por error)
-          currentBatchSize = initialBatchSize; 
-
-        } catch (batchError: any) {
-          // --- MANEJO DE ERRORES ESPECIALIZADO ---
-          if (translationProvider === 'huggingface' && (batchError instanceof HeadersTimeoutError || batchError.code === 'HEADERS_TIMEOUT')) {
-            // Lógica específica de Hugging Face para HeadersTimeout
-            console.warn(`Headers Timeout Error (HF) recibido para el lote en índice ${i}. Reduciendo tamaño de lote.`);
-            const oldBatchSize = currentBatchSize;
-            currentBatchSize = Math.max(minBatchSize, Math.floor(currentBatchSize / 2));
-            console.log(`Tamaño de lote reducido de ${oldBatchSize} a ${currentBatchSize}. Reintentando el mismo lote...`);
-            await new Promise(resolve => setTimeout(resolve, 500)); // Pequeña pausa antes de reintentar
-            // No incrementar 'i', reintentar el mismo lote con tamaño reducido
-          
-          // --- NUEVA LÓGICA PARA EASYNMT 5xx ---
-          } else if (translationProvider === 'easynmt' && batchError instanceof EasyNMTProcessingError && batchError.httpStatus && batchError.httpStatus >= 500) { // Usar httpStatus
-             console.warn(`Error ${batchError.httpStatus} (EasyNMT) recibido para el lote en índice ${i}. Reduciendo tamaño de lote.`); // Usar httpStatus
-             const oldBatchSize = currentBatchSize;
-             currentBatchSize = Math.max(minBatchSize, Math.floor(currentBatchSize / 2));
-             console.log(`Tamaño de lote reducido de ${oldBatchSize} a ${currentBatchSize}. Reintentando el mismo lote...`);
-             if (currentBatchSize === oldBatchSize && oldBatchSize === minBatchSize) {
-                // Si ya estamos en el tamaño mínimo y sigue fallando, es irrecuperable
-                console.error(`Error ${batchError.httpStatus} persistente en EasyNMT incluso con tamaño de lote mínimo (${minBatchSize}). Abortando.`); // Usar httpStatus
-                translationErrorOccurred = true;
-                batchErrorMessage = `Error ${batchError.httpStatus} persistente en EasyNMT: ${batchError.message}`; // Usar httpStatus
-                if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
-                  global.translationProgress[sessionId].status = 'partial_error';
-                }
-                break; // Detener el bucle
-             }
-             await new Promise(resolve => setTimeout(resolve, 500)); // Pequeña pausa
-             // No incrementar 'i', reintentar el mismo lote con tamaño reducido
-          // --- FIN NUEVA LÓGICA ---
-
-          } else if (translationProvider === 'easynmt' && batchError.code === 'ECONNREFUSED') {
-             // Error específico de EasyNMT si no se puede conectar (sin reducción de lote)
-             console.error(`Error de conexión con EasyNMT en el lote ${i}. Asegúrate de que el contenedor Docker está en ejecución y accesible en ${process.env.EASYNMT_API_URL}.`);
-             translationErrorOccurred = true;
-             batchErrorMessage = `No se pudo conectar al servicio local EasyNMT. (${batchError.message})`;
-             if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
-               global.translationProgress[sessionId].status = 'error'; // Error irrecuperable
-             }
-             break; // Detener el proceso
-          }
-          else {
-            // Error genérico o irrecuperable para cualquier proveedor
-            console.error(`Error definitivo al traducir el lote en índice ${i} con ${translationProvider}:`, batchError);
-            translationErrorOccurred = true;
-            batchErrorMessage = batchError instanceof Error ? batchError.message : String(batchError);
-            console.log("Deteniendo el bucle de traducción debido a un error definitivo. Se generará un PDF parcial.");
-            if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
-              global.translationProgress[sessionId].status = 'partial_error';
-            }
-            break; // Detener el bucle
-          }
-          // --- FIN MANEJO DE ERRORES ---
-        }
-      }
-
-      console.log(`Generando PDF ${translationErrorOccurred ? 'parcial' : 'completo'} con contenido traducido...`);
-      
-      const translatedPdfDoc = await PDFDocument.create();
-      const helvetica = await translatedPdfDoc.embedFont(StandardFonts.Helvetica);
-      const helveticaOblique = await translatedPdfDoc.embedFont(StandardFonts.HelveticaOblique);
-      const helveticaBold = await translatedPdfDoc.embedFont(StandardFonts.HelveticaBold);
-
-      // --- Create and Draw Metadata Page (as the first page) ---
-      const metadataPage = translatedPdfDoc.addPage([595, 842]);
-      let metaY = metadataPage.getHeight() - 70; // Start Y position for metadata
-      const metaX = 50;
-      const metaLineHeight = 18;
-      const metaTitleSize = 18;
-      const metaInfoSize = 11;
-      const metaLegendSize = 10;
-
-      metadataPage.drawText("Documento Traducido", {
-        x: metaX, y: metaY, size: metaTitleSize, font: helveticaBold
-      });
-      metaY -= metaLineHeight * 2;
-
-      metadataPage.drawText(`Nombre original: ${originalFilename}`, {
-        x: metaX, y: metaY, size: metaInfoSize, font: helvetica
-      });
-      metaY -= metaLineHeight;
-
-      metadataPage.drawText(`Formato original: ${fileType.toUpperCase()}`, {
-        x: metaX, y: metaY, size: metaInfoSize, font: helvetica
-      });
-      metaY -= metaLineHeight;
-
-      metadataPage.drawText(`Fecha: ${new Date().toLocaleDateString()}`, {
-        x: metaX, y: metaY, size: metaInfoSize, font: helvetica
-      });
-      metaY -= metaLineHeight * 1.5;
-
-      // Status Message
-      let statusMessage = '';
-      if (translationErrorOccurred) {
-        statusMessage = `Parcial - La traducción se interrumpió.`;
-      } else if (CONFIG.limitedMode) {
-        statusMessage = `Parcial (Modo Limitado) - Se han procesado las primeras ${pagesToProcess} páginas.`;
-      } else {
-        statusMessage = `Completo - Se han procesado las ${totalPages} páginas.`;
-      }
-      metadataPage.drawText(statusMessage, {
-        x: metaX, y: metaY, size: metaInfoSize, font: helveticaBold
-      });
-      metaY -= metaLineHeight;
-
-      // Add error details if applicable
-      if (translationErrorOccurred) {
-         metadataPage.drawText(`Error: ${batchErrorMessage.substring(0, 100)}${batchErrorMessage.length > 100 ? '...' : ''}`, {
-           x: metaX, y: metaY, size: metaInfoSize - 1, font: helvetica, color: rgb(0.8, 0.1, 0.1)
-         });
-         metaY -= metaLineHeight * 1.5;
-      } else {
-         metaY -= metaLineHeight * 0.5; // Smaller gap if no error
-      }
-
-      metadataPage.drawText(`Traducido con: ${translationProvider === 'easynmt' ? 'EasyNMT (Local)' : 'Hugging Face API'}`, {
-        x: metaX, y: metaY, size: metaInfoSize, font: helvetica
-      });
-      metaY -= metaLineHeight * 2;
-
-      // Legend
-      const germanColor = rgb(0.1, 0.3, 0.6);
-      const spanishColor = rgb(0, 0, 0);
-      metadataPage.drawText("DE: texto en alemán (azul)", {
-        x: metaX, y: metaY, size: metaLegendSize, font: helveticaBold, color: germanColor
-      });
-      metaY -= metaLineHeight * 0.8;
-      metadataPage.drawText("ES: traducción al español (negro)", {
-        x: metaX, y: metaY, size: metaLegendSize, font: helveticaOblique, color: spanishColor
-      });
-      // --- End Metadata Page ---
-
-      // --- Add Pages for Translated Content ---
-      let contentCurrentPage = translatedPdfDoc.addPage([595, 842]); // First page for actual content
-      let contentPageCount = 2; // Start counting from 2 (metadata is page 1)
-      const { width, height } = contentCurrentPage.getSize();
-      const fontSize = 11;
-      const lineHeight = fontSize * 1.2;
-      let y = height - 50;
-
-      const germanTextOptions = { size: fontSize, color: germanColor, font: helveticaBold };
-      const spanishTextOptions = { size: fontSize, color: spanishColor, font: helveticaOblique };
-
-      // --- Define drawWrappedText for translatedPdfDoc ---
-      const drawWrappedText = (text: string, options: any): number => {
-        const safeText = sanitizeText(text);
-        const maxWidth = width - 100;
-        const textLineHeight = options.size * 1.2;
-        const words = safeText.split(' ');
-        let line = '';
-        let yPos = options.y;
-
-        for (let i = 0; i < words.length; i++) {
-          const word = words[i];
-          const testLine = line + (line ? ' ' : '') + word;
-          try {
-            const textWidth = options.font.widthOfTextAtSize(testLine, options.size);
-            if (textWidth > maxWidth && line !== '') {
-              contentCurrentPage.drawText(line, { ...options, y: yPos });
-              line = word;
-              yPos -= textLineHeight;
-              if (yPos < 50) {
-                contentCurrentPage = translatedPdfDoc.addPage([595, 842]);
-                contentPageCount++;
-                yPos = contentCurrentPage.getHeight() - 50;
-                if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
-                   global.translationProgress[sessionId].totalPages =
-                     Math.max(global.translationProgress[sessionId].totalPages, contentPageCount + (translationErrorOccurred ? 1 : 0));
-                }
-              }
-            } else {
-              line = testLine;
-            }
-          } catch (error: unknown) {
-            console.warn(`Error al procesar palabra "${word}": ${error instanceof Error ? error.message : String(error)}`);
-            line = line || '';
-          }
-        }
-        if (line) {
-          try {
-            contentCurrentPage.drawText(line, { ...options, y: yPos });
-          } catch (error: unknown) {
-            console.warn(`Error al añadir la última línea "${line}": ${error instanceof Error ? error.message : String(error)}`);
-          }
-        }
-        return yPos - textLineHeight;
-      };
-      // --- End drawWrappedText definition ---
-
-      // --- Draw the translated sentences into translatedPdfDoc ---
-      for (const { original, translation } of translatedSentences) {
-        try {
-          const minimumHeightNeeded = lineHeight * 2 + 20;
-          
-          if (y - minimumHeightNeeded < 50) {
-            contentCurrentPage = translatedPdfDoc.addPage([595, 842]);
-            contentPageCount++;
-            y = contentCurrentPage.getHeight() - 50;
-            
-            if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
-              global.translationProgress[sessionId].currentPage = contentPageCount;
-              global.translationProgress[sessionId].totalPages = 
-                Math.max(global.translationProgress[sessionId].totalPages, contentPageCount);
-            }
-          }
-          
-          y = drawWrappedText(original, {
-            x: 50,
-            y,
-            ...germanTextOptions
-          });
-          
-          y -= 10;
-          
-          y = drawWrappedText(translation, {
-            x: 50,
-            y,
-            ...spanishTextOptions
-          });
-          
-          y -= 25;
-        } catch (error: unknown) {
-          console.error(`Error procesando par de frases: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      }
-      // --- End drawing translated sentences ---
-
-      // --- Draw Page Numbers on translatedPdfDoc (excluding metadata page) ---
-      const pageIndicesToNumber = translatedPdfDoc.getPageIndices();
-      pageIndicesToNumber.shift(); // Don't number the metadata page
-      pageIndicesToNumber.forEach((pageIndex, i) => {
-         const p = translatedPdfDoc.getPage(pageIndex);
-         const pageSize = p.getSize();
-         p.drawText(`Página ${i + 1}`, { // Number content pages sequentially from 1
-            x: pageSize.width / 2 - 20, y: 30, size: 10, color: rgb(0.5, 0.5, 0.5), font: helvetica
-         });
-      });
-      // --- End Draw Page Numbers ---
-
-      // --- Calculate Duration and Add to Last Content Page ---
-      const processEndTime = Date.now();
-      const durationMs = processEndTime - processStartTime;
-      const durationString = formatDuration(durationMs);
-      const durationText = `Tiempo total de procesamiento: ${durationString}${translationErrorOccurred ? ' (Interrumpido)' : ''}`;
+    while (i < sentencesToTranslate.length) {
+      batchCounter++;
+      const batchTexts = sentencesToTranslate.slice(i, i + currentBatchSize);
+      const batchInfos = sentenceInfos.slice(i, i + currentBatchSize);
+      console.log(`Procesando Lote #${batchCounter} (Índice ${i}, Tamaño ${batchTexts.length}) con ${translationProvider}...`);
 
       try {
-        const lastPageIndex = translatedPdfDoc.getPageCount() - 1; // Index of the last page (which is a content page)
-        if (lastPageIndex >= 1) { // Ensure there's at least one content page besides metadata
-          const lastPage = translatedPdfDoc.getPage(lastPageIndex);
-          lastPage.drawText(durationText, {
-            x: 50, y: 15, size: 8, font: helvetica, color: rgb(0.5, 0.5, 0.5),
+        let results: string[];
+        if (translationProvider === 'easynmt') {
+          results = await translateWithEasyNMT(batchTexts);
+        } else {
+          results = await translateWithHuggingFace(batchTexts);
+        }
+
+        if (results.length !== batchTexts.length) {
+          console.warn(`Discrepancia en tamaño de lote: entrada=${batchTexts.length}, salida=${results.length}. Rellenando.`);
+          const correctedResults = new Array(batchTexts.length).fill('(Error de tamaño de lote)');
+          for (let k = 0; k < Math.min(results.length, batchTexts.length); k++) {
+            correctedResults[k] = results[k];
+          }
+          results = correctedResults;
+        }
+
+        for (let j = 0; j < batchTexts.length; j++) {
+          const translationText = results[j] || '(No translation)';
+          const sanitizedTranslation = sanitizeText(translationText);
+
+          translatedItems.push({
+            original: batchInfos[j].text,
+            translation: sanitizedTranslation,
+            isEndOfParagraph: batchInfos[j].isEndOfParagraph
           });
+
+          if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
+            const newCompletedCount = i + j + 1;
+            global.translationProgress[sessionId].completedSentences = newCompletedCount;
+          }
         }
-      } catch (drawError) {
-         console.warn("No se pudo añadir el tiempo de procesamiento al PDF:", drawError);
-      }
-      // --- End Add Duration ---
 
-      // Update final status
-      if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
-        if (!translationErrorOccurred) {
-           global.translationProgress[sessionId].status = 'completed';
-           global.translationProgress[sessionId].completedBatches = batchCounter;
+        if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
+          global.translationProgress[sessionId].completedBatches = batchCounter;
         }
-        global.translationProgress[sessionId].totalPages = translatedPdfDoc.getPageCount();
+
+        i += batchTexts.length;
+        currentBatchSize = initialBatchSize;
+
+      } catch (batchError: any) {
+        console.error(`Error procesando lote ${batchCounter}:`, batchError);
+        const oldBatchSize = currentBatchSize;
+        currentBatchSize = Math.max(minBatchSize, Math.floor(currentBatchSize / 2));
+        if (currentBatchSize === oldBatchSize && oldBatchSize === minBatchSize) {
+          console.error(`Error persistente incluso con tamaño de lote mínimo (${minBatchSize}). Abortando.`);
+          translationErrorOccurred = true;
+          batchErrorMessage = `Error persistente: ${batchError instanceof Error ? batchError.message : String(batchError)}`;
+          if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
+            global.translationProgress[sessionId].status = 'partial_error';
+          }
+          break;
+        } else {
+          console.log(`Tamaño de lote reducido de ${oldBatchSize} a ${currentBatchSize}. Reintentando el mismo lote...`);
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      }
+    }
+
+    console.log(`Generando PDF ${translationErrorOccurred ? 'parcial' : 'completo'} con formato de párrafo...`);
+
+    const translatedPdfDoc = await PDFDocument.create();
+    const helvetica = await translatedPdfDoc.embedFont(StandardFonts.Helvetica);
+    const helveticaOblique = await translatedPdfDoc.embedFont(StandardFonts.HelveticaOblique);
+    const helveticaBold = await translatedPdfDoc.embedFont(StandardFonts.HelveticaBold);
+
+    const metadataPage = translatedPdfDoc.addPage([595, 842]);
+    let metaY = metadataPage.getHeight() - 70;
+    const metaX = 50;
+    const metaLineHeight = 18;
+    const metaTitleSize = 18;
+    const metaInfoSize = 11;
+    const metaLegendSize = 10;
+
+    metadataPage.drawText("Documento Traducido", { x: metaX, y: metaY, size: metaTitleSize, font: helveticaBold });
+    metaY -= metaLineHeight * 2;
+    metadataPage.drawText(`Nombre original: ${originalFilename}`, { x: metaX, y: metaY, size: metaInfoSize, font: helvetica });
+    metaY -= metaLineHeight;
+    metadataPage.drawText(`Formato original: ${fileType.toUpperCase()}`, { x: metaX, y: metaY, size: metaInfoSize, font: helvetica });
+    metaY -= metaLineHeight;
+    metadataPage.drawText(`Fecha: ${new Date().toLocaleDateString()}`, { x: metaX, y: metaY, size: metaInfoSize, font: helvetica });
+    metaY -= metaLineHeight;
+
+    metaY -= metaLineHeight * 1.5;
+
+    let statusMessage = '';
+    if (translationErrorOccurred) {
+      statusMessage = `Parcial - La traducción se interrumpió.`;
+    } else if (CONFIG.limitedMode && pagesToProcess < totalPages) {
+      statusMessage = `Parcial (Modo Limitado) - Se han procesado las primeras ${pagesToProcess} páginas.`;
+    } else {
+      statusMessage = `Completo - Se han procesado las ${pagesToProcess} páginas.`;
+    }
+    metadataPage.drawText(statusMessage, { x: metaX, y: metaY, size: metaInfoSize, font: helveticaBold });
+    metaY -= metaLineHeight;
+
+    if (translationErrorOccurred) { metaY -= metaLineHeight * 1.5; } else { metaY -= metaLineHeight * 0.5; }
+    metadataPage.drawText(`Traducido con: ${translationProvider === 'easynmt' ? 'EasyNMT (Local)' : 'Hugging Face API'}`, { x: metaX, y: metaY, size: metaInfoSize, font: helvetica });
+    metaY -= metaLineHeight * 2;
+    const germanColor = rgb(0.1, 0.3, 0.6);
+    const spanishColor = rgb(0, 0, 0);
+    metadataPage.drawText("DE: texto original (azul)", { x: metaX, y: metaY, size: metaLegendSize, font: helveticaBold, color: germanColor });
+    metaY -= metaLineHeight * 0.8;
+    metadataPage.drawText("ES: traducción al español (negro)", { x: metaX, y: metaY, size: metaLegendSize, font: helveticaOblique, color: spanishColor });
+
+    let contentCurrentPage = translatedPdfDoc.addPage([595, 842]);
+    let contentPageCount = 2;
+    const { width, height } = contentCurrentPage.getSize();
+    const fontSize = 11;
+    const lineHeight = fontSize * 1.2;
+    let y = height - 50;
+
+    const germanTextOptions = { size: fontSize, color: germanColor, font: helveticaBold };
+    const spanishTextOptions = { size: fontSize, color: spanishColor, font: helveticaOblique };
+    const paragraphSpacing = 12; // Aumentar un poco el espacio general post-párrafo
+    const separatorLineColor = rgb(0.3, 0.3, 0.3); // Más oscuro (gris oscuro)
+    const separatorMargin = 40; // Margen más pequeño para línea más larga
+    const spaceAfterSeparator = 15; // Más espacio después de la línea
+
+    const drawWrappedText = (text: string, options: any): { y: number, pageAdvanced: boolean } => {
+      const safeText = sanitizeText(text);
+      const maxWidth = width - 100;
+      const textLineHeight = options.size * 1.2;
+      const words = safeText.split(' ');
+      let line = '';
+      let yPos = options.y;
+      let pageAdvanced = false;
+
+      for (let n = 0; n < words.length; n++) {
+        const word = words[n];
+        const testLine = line + (line ? ' ' : '') + word;
+        let textWidth = 0;
+        try {
+          textWidth = options.font.widthOfTextAtSize(testLine, options.size);
+        } catch (e) {
+          console.warn(`Error midiendo texto: "${testLine.substring(0, 50)}..."`, e);
+          textWidth = line ? options.font.widthOfTextAtSize(line, options.size) : 0;
+        }
+
+        if (textWidth > maxWidth && line !== '') {
+          try {
+            contentCurrentPage.drawText(line, { ...options, y: yPos });
+          } catch (drawError) { console.warn(`Error dibujando línea: "${line.substring(0, 50)}..."`, drawError); }
+          line = word;
+          yPos -= textLineHeight;
+
+          if (yPos < 50) {
+            contentCurrentPage = translatedPdfDoc.addPage([595, 842]);
+            contentPageCount++;
+            yPos = contentCurrentPage.getHeight() - 50;
+            pageAdvanced = true;
+            if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
+              global.translationProgress[sessionId].totalPages = Math.max(global.translationProgress[sessionId].totalPages, contentPageCount);
+              global.translationProgress[sessionId].currentPage = contentPageCount;
+            }
+          }
+        } else {
+          line = testLine;
+        }
       }
 
-      // Save the translated content PDF (metadata + content + duration)
-      const translatedPdfBytes: Uint8Array = await translatedPdfDoc.save();
-      const translatedPdfBuffer = Buffer.from(translatedPdfBytes);
-
-      // --- Use addCoverPage to prepend the original cover ---
-      console.log("Añadiendo portada original al PDF traducido...");
-      if (!originalFileBuffer) {
-         throw new Error("No se encontró el buffer del archivo original para añadir la portada.");
+      if (line) {
+        try {
+          contentCurrentPage.drawText(line, { ...options, y: yPos });
+        } catch (drawError) { console.warn(`Error dibujando última línea: "${line.substring(0, 50)}..."`, drawError); }
       }
-      const finalPdfBuffer = await addCoverPage(originalFileBuffer, translatedPdfBuffer);
-      // --- End using addCoverPage ---
+      return { y: yPos - textLineHeight, pageAdvanced };
+    };
 
-      const parsedOriginalFilename = parse(originalFilename);
-      const outputFilenameBase = parsedOriginalFilename.name;
-      const outputFilenameSuffix = translationErrorOccurred ? '_partial_translated.pdf' : '_translated.pdf';
-      const outputFilename = `${outputFilenameBase}${outputFilenameSuffix}`;
+    for (let itemIndex = 0; itemIndex < translatedItems.length; itemIndex++) {
+      const item = translatedItems[itemIndex];
+      try {
+        const minimumHeightNeeded = lineHeight * 2 + (item.isEndOfParagraph ? paragraphSpacing + spaceAfterSeparator : 0) + 25;
 
-      if (filePath && existsSync(filePath)) {
-        await unlink(filePath).catch(err => console.error('Error eliminando archivo original temporal:', err));
+        if (y - minimumHeightNeeded < 50) {
+          contentCurrentPage = translatedPdfDoc.addPage([595, 842]);
+          contentPageCount++;
+          y = contentCurrentPage.getHeight() - 50;
+          if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
+            global.translationProgress[sessionId].currentPage = contentPageCount;
+            global.translationProgress[sessionId].totalPages = Math.max(global.translationProgress[sessionId].totalPages, contentPageCount);
+          }
+        }
+
+        const yBeforePair = y;
+
+        let drawResult = drawWrappedText(item.original, { x: 50, y, ...germanTextOptions });
+        y = drawResult.y;
+        if (drawResult.pageAdvanced) {
+          y = contentCurrentPage.getHeight() - 50 - (yBeforePair - drawResult.y);
+        }
+
+        y -= 5;
+
+        const yBeforeTranslation = y;
+        drawResult = drawWrappedText(item.translation, { x: 50, y, ...spanishTextOptions });
+        y = drawResult.y;
+        if (drawResult.pageAdvanced) {
+          y = contentCurrentPage.getHeight() - 50 - (yBeforeTranslation - drawResult.y);
+        }
+
+        const isLastItemOverall = itemIndex === translatedItems.length - 1;
+        if (item.isEndOfParagraph && !isLastItemOverall && y > 60) {
+          try {
+            contentCurrentPage.drawLine({
+              start: { x: separatorMargin, y: y + 5 },
+              end: { x: width - separatorMargin, y: y + 5 },
+              thickness: 0.6,
+              color: separatorLineColor,
+              opacity: 0.8
+            });
+            y -= spaceAfterSeparator;
+          } catch (lineError) {
+            console.warn("Error dibujando línea separadora:", lineError);
+          }
+          y -= paragraphSpacing;
+        } else {
+          y -= 15;
+        }
+      } catch (error: unknown) {
+        console.error(`Error procesando item para PDF: ${error instanceof Error ? error.message : String(error)}`, item.original.substring(0, 30));
       }
+    }
 
-      console.log(`Devolviendo PDF ${translationErrorOccurred ? 'parcial' : 'completo'}: ${outputFilename}`);
-      return new NextResponse(finalPdfBuffer, {
-        status: 200,
-        headers: {
-          'Content-Type': 'application/pdf',
-          'Content-Disposition': `attachment; filename="${outputFilename}"`,
-        },
+    const pageIndicesToNumber = translatedPdfDoc.getPageIndices();
+    pageIndicesToNumber.shift();
+    pageIndicesToNumber.forEach((pageIndex, i) => {
+      const p = translatedPdfDoc.getPage(pageIndex);
+      const pageSize = p.getSize();
+      const footerText = `Pág. ${i + 1}`; // Solo el número de página traducida
+      const textWidth = helvetica.widthOfTextAtSize(footerText, 9);
+      p.drawText(footerText, {
+        x: pageSize.width / 2 - textWidth / 2, // Centrado
+        y: 30, size: 9,
+        color: rgb(0.5, 0.5, 0.5), font: helvetica
       });
+    });
 
-    } catch (error) {
-      console.error(`Error durante el proceso de traducción o creación de PDF:`, error);
-      if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
-        global.translationProgress[sessionId].status = 'error';
+    const processEndTime = Date.now();
+    const durationMs = processEndTime - processStartTime;
+
+    try {
+      const lastPageIndex = translatedPdfDoc.getPageCount() - 1;
+      if (lastPageIndex >= 1) {
+        const lastPage = translatedPdfDoc.getPage(lastPageIndex);
+        lastPage.drawText(`Tiempo total de procesamiento: ${formatDuration(durationMs)}${translationErrorOccurred ? ' (Interrumpido)' : ''}`, {
+          x: 50, y: 15, size: 8, font: helvetica, color: rgb(0.5, 0.5, 0.5),
+        });
       }
-      if (filePath && existsSync(filePath)) {
-        await unlink(filePath).catch(err => console.error('Error eliminando archivo original temporal tras error:', err));
-      }
-      return NextResponse.json({ 
-        error: `Error durante el procesamiento del archivo.`,
-        details: error instanceof Error ? error.message : String(error)
-      }, { status: 500 });
+    } catch (drawError) {
+      console.warn("No se pudo añadir el tiempo de procesamiento al PDF:", drawError);
     }
-  } catch (error: unknown) {
-    console.error('Error procesando la solicitud inicial:', error instanceof Error ? error.message : String(error));
-    if (filePath && existsSync(filePath)) {
-        await unlink(filePath).catch(err => console.error('Error eliminando archivo original temporal tras error inicial:', err));
-    }
+
     if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
-        delete global.translationProgress[sessionId];
+      if (!translationErrorOccurred) {
+        global.translationProgress[sessionId].status = 'completed';
+        global.translationProgress[sessionId].completedBatches = batchCounter;
+      }
+      global.translationProgress[sessionId].totalPages = translatedPdfDoc.getPageCount();
     }
-    return NextResponse.json({ 
-      error: 'Error procesando la solicitud', 
-      details: error instanceof Error ? error.message : String(error) 
+
+    const translatedPdfBytes: Uint8Array = await translatedPdfDoc.save();
+    const translatedPdfBuffer = Buffer.from(translatedPdfBytes);
+
+    console.log("Añadiendo portada original...");
+    if (!originalFileBuffer) throw new Error("Buffer original no disponible");
+    const finalPdfBuffer = await addCoverPage(originalFileBuffer, translatedPdfBuffer);
+
+    const parsedOriginalFilename = parse(originalFilename);
+    const outputFilenameBase = parsedOriginalFilename.name;
+    const outputFilenameSuffix = translationErrorOccurred ? '_partial_translated_para.pdf' : '_translated_para.pdf';
+    const outputFilename = `${outputFilenameBase}${outputFilenameSuffix}`;
+
+    if (filePath && existsSync(filePath)) {
+      await unlink(filePath).catch(err => console.error('Error eliminando archivo original temporal:', err));
+    }
+
+    console.log(`Devolviendo PDF ${translationErrorOccurred ? 'parcial' : 'completo'} con formato de párrafo: ${outputFilename}`);
+    return new NextResponse(finalPdfBuffer, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/pdf',
+        'Content-Disposition': `attachment; filename="${outputFilename}"`,
+      },
+    });
+
+  } catch (error) {
+    console.error(`Error durante el proceso:`, error);
+    if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
+      global.translationProgress[sessionId].status = 'error';
+    }
+    if (filePath && existsSync(filePath)) {
+      await unlink(filePath).catch(err => console.error('Error eliminando archivo original temporal tras error:', err));
+    }
+    return NextResponse.json({
+      error: `Error durante el procesamiento del archivo.`,
+      details: error instanceof Error ? error.message : String(error)
     }, { status: 500 });
   }
 }
