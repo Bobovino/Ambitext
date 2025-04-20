@@ -670,7 +670,7 @@ export async function POST(req: NextRequest) {
     if (translationErrorOccurred) { metaY -= metaLineHeight * 1.5; } else { metaY -= metaLineHeight * 0.5; }
     metadataPage.drawText(`Traducido con: ${translationProvider === 'easynmt' ? 'EasyNMT (Local)' : 'Hugging Face API'}`, { x: metaX, y: metaY, size: metaInfoSize, font: helvetica });
     metaY -= metaLineHeight;
-    metadataPage.drawText(`Traducción: ${sourceLang.toUpperCase()} → ${targetLang.toUpperCase()}`, { x: metaX, y: metaY, size: metaInfoSize, font: helvetica });
+    metadataPage.drawText(`Traducción: ${sourceLang.toUpperCase()} -> ${targetLang.toUpperCase()}`, { x: metaX, y: metaY, size: metaInfoSize, font: helvetica });
     metaY -= metaLineHeight;
     metadataPage.drawText(`${sourceLang.toUpperCase()}: texto original (azul)`, { x: metaX, y: metaY, size: metaLegendSize, font: helveticaBold, color: sourceColor });
     metaY -= metaLineHeight * 0.8;
