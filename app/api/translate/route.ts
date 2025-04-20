@@ -554,17 +554,17 @@ export async function POST(req: NextRequest) {
       metadataPage.drawText(`${targetLang.toUpperCase()}: traducción (negro)`, { x: metaX, y: metaY, size: metaLegendSize, font: helveticaOblique, color: targetColor });
 
       // 3. Por cada página original:
-      for (let pageIndex = 0; pageIndex < pagesToProcess; pageIndex++) {
+      for (let pageIndex = 1; pageIndex < pagesToProcess; pageIndex++) {
         if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
           global.translationProgress[sessionId].currentPage = pageIndex + 1;
           global.translationProgress[sessionId].processedPages = pageIndex;
         }
 
-        // 3.1 Añadir página original
+        // 1. Añadir página original
         const [origPage] = await finalPdfDoc.copyPages(originalPdfDoc, [pageIndex]);
         finalPdfDoc.addPage(origPage);
 
-        // 3.2 Extraer texto y traducir
+        // 2. Extraer texto y traducir
         const pageText = await extractTextFromPdfPage(originalPdfDoc, pageIndex);
         const sentenceInfos = splitIntoSentences(pageText);
 
@@ -580,25 +580,70 @@ export async function POST(req: NextRequest) {
           translations = await translateWithHuggingFace(sentencesToTranslate, sourceLang, targetLang);
         }
 
-        // 3.3 Añadir página de traducción
-        const translationPage = finalPdfDoc.addPage([595, 842]);
-        let y = 792; // margen superior
+        // 3. Añadir tantas páginas de traducción como sean necesarias
+        let translationPage = finalPdfDoc.addPage([595, 842]);
+        let y = 792;
+        const width = 595;
+        const fontSize = 11;
+        const lineHeight = fontSize * 1.2;
+
+        const drawWrappedText = (text: string, options: any): { y: number, pageAdvanced: boolean } => {
+          const safeText = sanitizeText(text);
+          const maxWidth = width - 100;
+          const textLineHeight = options.size * 1.2;
+          const words = safeText.split(' ');
+          let line = '';
+          let yPos = options.y;
+          let pageAdvanced = false;
+
+          for (let n = 0; n < words.length; n++) {
+            const word = words[n];
+            const testLine = line + (line ? ' ' : '') + word;
+            let textWidth = 0;
+            try {
+              textWidth = options.font.widthOfTextAtSize(testLine, options.size);
+            } catch (e) {
+              textWidth = line ? options.font.widthOfTextAtSize(line, options.size) : 0;
+            }
+
+            if (textWidth > maxWidth && line !== '') {
+              translationPage.drawText(line, { ...options, y: yPos });
+              line = word;
+              yPos -= textLineHeight;
+              if (yPos < 60) {
+                translationPage = finalPdfDoc.addPage([595, 842]);
+                yPos = 792;
+                pageAdvanced = true;
+              }
+            } else {
+              line = testLine;
+            }
+          }
+          if (line) {
+            translationPage.drawText(line, { ...options, y: yPos });
+          }
+          return { y: yPos - textLineHeight, pageAdvanced };
+        };
+
         for (let i = 0; i < sentenceInfos.length; i++) {
-          // Dibuja frase original
-          translationPage.drawText(sentenceInfos[i].text, { x: 50, y, size: 11, font: helveticaBold, color: sourceColor });
-          y -= 16;
-          // Dibuja traducción
-          translationPage.drawText(translations[i], { x: 50, y, size: 11, font: helveticaOblique, color: targetColor });
-          y -= 20;
+          // Frase original
+          let drawResult = drawWrappedText(sentenceInfos[i].text, { x: 50, y, size: 11, font: helveticaBold, color: sourceColor });
+          y = drawResult.y;
+          if (drawResult.pageAdvanced) y = 792 - (792 - drawResult.y);
+
+          y -= 5;
+
+          // Traducción
+          drawResult = drawWrappedText(translations[i], { x: 50, y, size: 11, font: helveticaOblique, color: targetColor });
+          y = drawResult.y;
+          if (drawResult.pageAdvanced) y = 792 - (792 - drawResult.y);
+
+          y -= 15;
+
+          if (sentenceInfos[i].isEndOfParagraph) y -= 10;
 
           if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
             global.translationProgress[sessionId].completedSentences += 1;
-          }
-
-          if (sentenceInfos[i].isEndOfParagraph) y -= 10;
-          if (y < 60) { // Salto de página si es necesario
-            y = 792;
-            finalPdfDoc.addPage([595, 842]);
           }
         }
       }
