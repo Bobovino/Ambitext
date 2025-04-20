@@ -502,6 +502,17 @@ export async function POST(req: NextRequest) {
         global.translationProgress[sessionId].completedSentences = 0;
       }
 
+      // Justo después de cargar originalPdfDoc y antes del bucle de traducción:
+      let totalSentences = 0;
+      for (let pageIndex = 1; pageIndex < pagesToProcess; pageIndex++) {
+        const pageText = await extractTextFromPdfPage(originalPdfDoc, pageIndex);
+        const sentenceInfos = splitIntoSentences(pageText);
+        totalSentences += sentenceInfos.length;
+      }
+      if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
+        global.translationProgress[sessionId].totalSentences = totalSentences;
+      }
+
       const finalPdfDoc = await PDFDocument.create();
 
       // 1. Portada original
