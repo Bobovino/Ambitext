@@ -10,6 +10,10 @@ const availableLanguages = [
   "aav", "aed", "af", "alv", "am", "ar", "art", "ase", "az", "bat", "bcl", "be", "bem", "ber", "bg", "bi", "bn", "bnt", "bzs", "ca", "cau", "ccs", "ceb", "cel", "chk", "cpf", "crs", "cs", "csg", "csn", "cus", "cy", "da", "de", "dra", "ee", "efi", "el", "en", "eo", "es", "et", "eu", "euq", "fi", "fj", "fr", "fse", "ga", "gaa", "gil", "gl", "grk", "guw", "gv", "ha", "he", "hi", "hil", "ho", "hr", "ht", "hu", "hy", "id", "ig", "ilo", "is", "iso", "it", "ja", "jap", "ka", "kab", "kg", "kj", "kl", "ko", "kqn", "kwn", "kwy", "lg", "ln", "loz", "lt", "lu", "lua", "lue", "lun", "luo", "lus", "lv", "map", "mfe", "mfs", "mg", "mh", "mk", "mkh", "ml", "mos", "mr", "ms", "mt", "mul", "ng", "nic", "niu", "nl", "no", "nso", "ny", "nyk", "om", "pa", "pag", "pap", "phi", "pis", "pl", "pon", "poz", "pqe", "pqw", "prl", "pt", "rn", "rnd", "ro", "roa", "ru", "run", "rw", "sal", "sg", "sh", "sit", "sk", "sl", "sm", "sn", "sq", "srn", "ss", "ssp", "st", "sv", "sw", "swc", "taw", "tdt", "th", "ti", "tiv", "tl", "tll", "tn", "to", "toi", "tpi", "tr", "trk", "ts", "tum", "tut", "tvl", "tw", "ty", "tzo", "uk", "umb", "ur", "ve", "vi", "vsl", "wa", "wal", "war", "wls", "xh", "yap", "yo", "yua", "zai", "zh", "zne"
 ];
 
+const popularLanguages = [
+  "en", "es", "fr", "de", "it", "pt", "zh", "ja", "ru", "ar","ko"
+];
+
 const languageLabels: Record<string, { native: string; en: string }> = {
   aav: { native: "Austroasiatic languages", en: "Austroasiatic languages" },
   aed: { native: "Argentine Sign Language", en: "Argentine Sign Language" },
@@ -346,13 +350,30 @@ export default function Translate() {
                 onChange={(e) => setSourceLang(e.target.value)}
                 className="w-full p-2 border border-gray-600 rounded bg-gray-700 text-white focus:ring-blue-500 focus:border-blue-500"
               >
-                {availableLanguages.map(lang => (
-                  <option key={lang} value={lang}>
-                    {languageLabels[lang]
-                      ? `${languageLabels[lang].native} / ${languageLabels[lang].en} / ${lang.toUpperCase()}`
-                      : lang.toUpperCase()}
-                  </option>
-                ))}
+                <optgroup label="🌟 Más populares">
+                  {popularLanguages.map(lang => (
+                    <option
+                      key={lang}
+                      value={lang}
+                      style={{ color: "#FFD700", fontWeight: "bold", backgroundColor: "#222" }}
+                    >
+                      {languageLabels[lang]
+                        ? `${languageLabels[lang].native} / ${languageLabels[lang].en} / ${lang.toUpperCase()}`
+                        : lang.toUpperCase()}
+                    </option>
+                  ))}
+                </optgroup>
+                <optgroup label="Otros idiomas">
+                  {availableLanguages
+                    .filter(lang => !popularLanguages.includes(lang))
+                    .map(lang => (
+                      <option key={lang} value={lang}>
+                        {languageLabels[lang]
+                          ? `${languageLabels[lang].native} / ${languageLabels[lang].en} / ${lang.toUpperCase()}`
+                          : lang.toUpperCase()}
+                      </option>
+                    ))}
+                </optgroup>
               </select>
             </div>
             <div>
@@ -363,13 +384,30 @@ export default function Translate() {
                 onChange={(e) => setTargetLang(e.target.value)}
                 className="w-full p-2 border border-gray-600 rounded bg-gray-700 text-white focus:ring-blue-500 focus:border-blue-500"
               >
-                {availableLanguages.map(lang => (
-                  <option key={lang} value={lang}>
-                    {languageLabels[lang]
-                      ? `${languageLabels[lang].native} / ${languageLabels[lang].en} / ${lang.toUpperCase()}`
-                      : lang.toUpperCase()}
-                  </option>
-                ))}
+                <optgroup label="🌟 Más populares">
+                  {popularLanguages.map(lang => (
+                    <option
+                      key={lang}
+                      value={lang}
+                      style={{ color: "#FFD700", fontWeight: "bold", backgroundColor: "#222" }}
+                    >
+                      {languageLabels[lang]
+                        ? `${languageLabels[lang].native} / ${languageLabels[lang].en} / ${lang.toUpperCase()}`
+                        : lang.toUpperCase()}
+                    </option>
+                  ))}
+                </optgroup>
+                <optgroup label="Otros idiomas">
+                  {availableLanguages
+                    .filter(lang => !popularLanguages.includes(lang))
+                    .map(lang => (
+                      <option key={lang} value={lang}>
+                        {languageLabels[lang]
+                          ? `${languageLabels[lang].native} / ${languageLabels[lang].en} / ${lang.toUpperCase()}`
+                          : lang.toUpperCase()}
+                      </option>
+                    ))}
+                </optgroup>
               </select>
             </div>
           </div>
@@ -414,12 +452,13 @@ export default function Translate() {
           <div className="mt-8 text-center">
             <p className="text-green-400 mb-3">¡Traducción completada!</p>
             <a
-              href={downloadUrl}
+              href={downloadUrl ?? undefined}
               download={getDownloadFilename()}
               className="btn-secondary inline-block"
               onClick={() => {
-                // Optional: Revoke URL after a delay to allow download start
-                setTimeout(() => window.URL.revokeObjectURL(downloadUrl), 100);
+                setTimeout(() => {
+                  if (downloadUrl) window.URL.revokeObjectURL(downloadUrl);
+                }, 100);
               }}
             >
               Descargar PDF Traducido
