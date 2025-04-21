@@ -664,17 +664,28 @@ export async function POST(req: NextRequest) {
             };
 
             for (let i = 0; i < sentenceInfos.length; i++) {
+              const cleanOriginal = sanitizeText(sentenceInfos[i].text);
+              const cleanTranslation = sanitizeText(translations[i]);
+              const originalLines = Math.ceil(helveticaBold.widthOfTextAtSize(cleanOriginal, 11) / (width - 100));
+              const translationLines = Math.ceil(helveticaOblique.widthOfTextAtSize(cleanTranslation, 11) / (width - 100));
+              const linesNeeded = originalLines + translationLines;
+              const extraSpace = 5 + 15 + (sentenceInfos[i].isEndOfParagraph ? 10 : 0);
+              const totalHeightNeeded = linesNeeded * lineHeight + extraSpace;
+
+              if (y - totalHeightNeeded < 60) {
+                translationPage = finalPdfDoc.addPage([595, 842]);
+                y = 792;
+              }
+
               // Frase original
-              let drawResult = drawWrappedText(sentenceInfos[i].text, { x: 50, y, size: 11, font: helveticaBold, color: sourceColor });
+              let drawResult = drawWrappedText(cleanOriginal, { x: 50, y, size: 11, font: helveticaBold, color: sourceColor });
               y = drawResult.y;
-              if (drawResult.pageAdvanced) y = 792 - (792 - drawResult.y);
 
               y -= 5;
 
               // Traducción
-              drawResult = drawWrappedText(translations[i], { x: 50, y, size: 11, font: helveticaOblique, color: targetColor });
+              drawResult = drawWrappedText(cleanTranslation, { x: 50, y, size: 11, font: helveticaOblique, color: targetColor });
               y = drawResult.y;
-              if (drawResult.pageAdvanced) y = 792 - (792 - drawResult.y);
 
               y -= 15;
 
