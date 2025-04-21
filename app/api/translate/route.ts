@@ -564,132 +564,151 @@ export async function POST(req: NextRequest) {
       metaY -= metaLineHeight * 0.8;
       metadataPage.drawText(`${targetLang.toUpperCase()}: traducción (negro)`, { x: metaX, y: metaY, size: metaLegendSize, font: helveticaOblique, color: targetColor });
 
-      // 3. Por cada página original:
-      for (let pageIndex = 1; pageIndex < pagesToProcess; pageIndex++) {
-        if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
-          global.translationProgress[sessionId].currentPage = pageIndex + 1;
-          global.translationProgress[sessionId].processedPages = pageIndex;
-        }
+      const translatedPdfDir = join(process.cwd(), 'tests', 'batch_pipeline', 'pdfs_traducidos');
+      await ensureDir(translatedPdfDir);
 
-        // 1. Añadir página original
-        const [origPage] = await finalPdfDoc.copyPages(originalPdfDoc, [pageIndex]);
-        finalPdfDoc.addPage(origPage);
+      let partialError = false;
 
-        // 2. Extraer texto y traducir
-        const pageText = await extractTextFromPdfPage(originalPdfDoc, pageIndex);
-        const sentenceInfos = splitIntoSentences(pageText);
-
-        if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
-          global.translationProgress[sessionId].totalSentences += sentenceInfos.length;
-        }
-
-        const sentencesToTranslate = sentenceInfos.map(info => sanitizeText(info.text));
-        let translations: string[] = [];
-        const initialBatchSize = translationProvider === 'easynmt' ? 50 : 25;
-        const minBatchSize = 3;
-        let currentBatchSize = initialBatchSize;
-        let i = 0;
-        while (i < sentencesToTranslate.length) {
-          const batchTexts = sentencesToTranslate.slice(i, i + currentBatchSize);
+      try {
+        // 3. Por cada página original:
+        for (let pageIndex = 1; pageIndex < pagesToProcess; pageIndex++) {
           try {
-            let results: string[];
-            if (translationProvider === 'easynmt') {
-              results = await translateWithEasyNMT(batchTexts, sourceLang, targetLang);
-            } else {
-              results = await translateWithHuggingFace(batchTexts, sourceLang, targetLang);
-            }
-            translations.push(...results);
-            i += batchTexts.length;
-            currentBatchSize = initialBatchSize;
-          } catch (batchError: any) {
-            const oldBatchSize = currentBatchSize;
-            currentBatchSize = Math.max(minBatchSize, Math.floor(currentBatchSize / 2));
-            if (currentBatchSize === oldBatchSize && oldBatchSize === minBatchSize) {
-              throw batchError;
-            }
-            await new Promise(resolve => setTimeout(resolve, 500));
-          }
-        }
-
-        // 3. Añadir tantas páginas de traducción como sean necesarias
-        let translationPage = finalPdfDoc.addPage([595, 842]);
-        let y = 792;
-        const width = 595;
-        const fontSize = 11;
-        const lineHeight = fontSize * 1.2;
-
-        const drawWrappedText = (text: string, options: any): { y: number, pageAdvanced: boolean } => {
-          const safeText = sanitizeText(text);
-          const maxWidth = width - 100;
-          const textLineHeight = options.size * 1.2;
-          const words = safeText.split(' ');
-          let line = '';
-          let yPos = options.y;
-          let pageAdvanced = false;
-
-          for (let n = 0; n < words.length; n++) {
-            const word = words[n];
-            const testLine = line + (line ? ' ' : '') + word;
-            let textWidth = 0;
-            try {
-              textWidth = options.font.widthOfTextAtSize(testLine, options.size);
-            } catch (e) {
-              textWidth = line ? options.font.widthOfTextAtSize(line, options.size) : 0;
+            if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
+              global.translationProgress[sessionId].currentPage = pageIndex + 1;
+              global.translationProgress[sessionId].processedPages = pageIndex;
             }
 
-            if (textWidth > maxWidth && line !== '') {
-              translationPage.drawText(line, { ...options, y: yPos });
-              line = word;
-              yPos -= textLineHeight;
-              if (yPos < 60) {
-                translationPage = finalPdfDoc.addPage([595, 842]);
-                yPos = 792;
-                pageAdvanced = true;
+            // 1. Añadir página original
+            const [origPage] = await finalPdfDoc.copyPages(originalPdfDoc, [pageIndex]);
+            finalPdfDoc.addPage(origPage);
+
+            // 2. Extraer texto y traducir
+            const pageText = await extractTextFromPdfPage(originalPdfDoc, pageIndex);
+            const sentenceInfos = splitIntoSentences(pageText);
+
+            if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
+              global.translationProgress[sessionId].totalSentences += sentenceInfos.length;
+            }
+
+            const sentencesToTranslate = sentenceInfos.map(info => sanitizeText(info.text));
+            let translations: string[] = [];
+            const initialBatchSize = translationProvider === 'easynmt' ? 50 : 25;
+            const minBatchSize = 3;
+            let currentBatchSize = initialBatchSize;
+            let i = 0;
+            while (i < sentencesToTranslate.length) {
+              const batchTexts = sentencesToTranslate.slice(i, i + currentBatchSize);
+              try {
+                let results: string[];
+                if (translationProvider === 'easynmt') {
+                  results = await translateWithEasyNMT(batchTexts, sourceLang, targetLang);
+                } else {
+                  results = await translateWithHuggingFace(batchTexts, sourceLang, targetLang);
+                }
+                translations.push(...results);
+                i += batchTexts.length;
+                currentBatchSize = initialBatchSize;
+              } catch (batchError: any) {
+                const oldBatchSize = currentBatchSize;
+                currentBatchSize = Math.max(minBatchSize, Math.floor(currentBatchSize / 2));
+                if (currentBatchSize === oldBatchSize && oldBatchSize === minBatchSize) {
+                  throw batchError;
+                }
+                await new Promise(resolve => setTimeout(resolve, 500));
               }
-            } else {
-              line = testLine;
             }
-          }
-          if (line) {
-            translationPage.drawText(line, { ...options, y: yPos });
-          }
-          return { y: yPos - textLineHeight, pageAdvanced };
-        };
 
-        for (let i = 0; i < sentenceInfos.length; i++) {
-          // Frase original
-          let drawResult = drawWrappedText(sentenceInfos[i].text, { x: 50, y, size: 11, font: helveticaBold, color: sourceColor });
-          y = drawResult.y;
-          if (drawResult.pageAdvanced) y = 792 - (792 - drawResult.y);
+            // 3. Añadir tantas páginas de traducción como sean necesarias
+            let translationPage = finalPdfDoc.addPage([595, 842]);
+            let y = 792;
+            const width = 595;
+            const fontSize = 11;
+            const lineHeight = fontSize * 1.2;
 
-          y -= 5;
+            const drawWrappedText = (text: string, options: any): { y: number, pageAdvanced: boolean } => {
+              const safeText = sanitizeText(text);
+              const maxWidth = width - 100;
+              const textLineHeight = options.size * 1.2;
+              const words = safeText.split(' ');
+              let line = '';
+              let yPos = options.y;
+              let pageAdvanced = false;
 
-          // Traducción
-          drawResult = drawWrappedText(translations[i], { x: 50, y, size: 11, font: helveticaOblique, color: targetColor });
-          y = drawResult.y;
-          if (drawResult.pageAdvanced) y = 792 - (792 - drawResult.y);
+              for (let n = 0; n < words.length; n++) {
+                const word = words[n];
+                const testLine = line + (line ? ' ' : '') + word;
+                let textWidth = 0;
+                try {
+                  textWidth = options.font.widthOfTextAtSize(testLine, options.size);
+                } catch (e) {
+                  textWidth = line ? options.font.widthOfTextAtSize(line, options.size) : 0;
+                }
 
-          y -= 15;
+                if (textWidth > maxWidth && line !== '') {
+                  translationPage.drawText(line, { ...options, y: yPos });
+                  line = word;
+                  yPos -= textLineHeight;
+                  if (yPos < 60) {
+                    translationPage = finalPdfDoc.addPage([595, 842]);
+                    yPos = 792;
+                    pageAdvanced = true;
+                  }
+                } else {
+                  line = testLine;
+                }
+              }
+              if (line) {
+                translationPage.drawText(line, { ...options, y: yPos });
+              }
+              return { y: yPos - textLineHeight, pageAdvanced };
+            };
 
-          if (sentenceInfos[i].isEndOfParagraph) y -= 10;
+            for (let i = 0; i < sentenceInfos.length; i++) {
+              // Frase original
+              let drawResult = drawWrappedText(sentenceInfos[i].text, { x: 50, y, size: 11, font: helveticaBold, color: sourceColor });
+              y = drawResult.y;
+              if (drawResult.pageAdvanced) y = 792 - (792 - drawResult.y);
 
-          if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
-            global.translationProgress[sessionId].completedSentences += 1;
+              y -= 5;
+
+              // Traducción
+              drawResult = drawWrappedText(translations[i], { x: 50, y, size: 11, font: helveticaOblique, color: targetColor });
+              y = drawResult.y;
+              if (drawResult.pageAdvanced) y = 792 - (792 - drawResult.y);
+
+              y -= 15;
+
+              if (sentenceInfos[i].isEndOfParagraph) y -= 10;
+
+              if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
+                global.translationProgress[sessionId].completedSentences += 1;
+              }
+            }
+          } catch (pageError) {
+            console.error(`Error traduciendo página ${pageIndex}:`, pageError);
+            partialError = true;
+            break; // O puedes continuar con las siguientes páginas si prefieres
           }
         }
+      } catch (error) {
+        console.error("Error general durante la traducción:", error);
+        partialError = true;
       }
 
       if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
-        global.translationProgress[sessionId].status = 'completed';
+        global.translationProgress[sessionId].status = partialError ? 'partial_error' : 'completed';
         global.translationProgress[sessionId].processedPages = pagesToProcess;
       }
 
       const finalPdfBytes: Uint8Array = await finalPdfDoc.save();
       const finalPdfBuffer = Buffer.from(finalPdfBytes);
 
+      // --- Guardar PDF parcial/completo en tests/pdfs_traducidos ---
       const parsedOriginalFilename = parse(originalFilename);
       const outputFilenameBase = parsedOriginalFilename.name;
-      const outputFilename = `${outputFilenameBase}_translated.pdf`;
+      const outputFilename = `${outputFilenameBase}${partialError ? '_partial' : ''}_translated.pdf`;
+      const outputPath = join(translatedPdfDir, outputFilename);
+      await writeFile(outputPath, finalPdfBuffer);
 
       if (filePath && existsSync(filePath)) {
         await unlink(filePath).catch(err => console.error('Error eliminando archivo original temporal:', err));
@@ -697,7 +716,7 @@ export async function POST(req: NextRequest) {
 
       console.log(`Devolviendo PDF traducido: ${outputFilename}`);
       return new NextResponse(finalPdfBuffer, {
-        status: 200,
+        status: partialError ? 206 : 200, // 206 Partial Content si hubo error
         headers: {
           'Content-Type': 'application/pdf',
           'Content-Disposition': `attachment; filename="${outputFilename}"`,
