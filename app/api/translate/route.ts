@@ -421,6 +421,16 @@ async function extractTextFromPdfPage(pdfDoc: PDFDocument, pageIndex: number): P
   return data.text;
 }
 
+// --- Helper function to format duration ---
+function formatDuration(ms: number): string {
+  if (ms < 0) ms = 0;
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes} min ${seconds} seg`;
+}
+// --- End Helper function ---
+
 export async function POST(req: NextRequest) {
   const processStartTime = Date.now();
   let filePath: string | null = null;
@@ -502,15 +512,19 @@ export async function POST(req: NextRequest) {
         global.translationProgress[sessionId].completedSentences = 0;
       }
 
-      // Justo después de cargar originalPdfDoc y antes del bucle de traducción:
       let totalSentences = 0;
       for (let pageIndex = 1; pageIndex < pagesToProcess; pageIndex++) {
-        const pageText = await extractTextFromPdfPage(originalPdfDoc, pageIndex);
-        const sentenceInfos = splitIntoSentences(pageText);
-        totalSentences += sentenceInfos.length;
+        try {
+          const pageText = await extractTextFromPdfPage(originalPdfDoc, pageIndex);
+          const sentenceInfos = splitIntoSentences(pageText);
+          totalSentences += sentenceInfos.length;
+        } catch (extractError) {
+          console.warn(`Error extrayendo texto de página ${pageIndex} para cálculo inicial:`, extractError);
+        }
       }
       if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
         global.translationProgress[sessionId].totalSentences = totalSentences;
+        global.translationProgress[sessionId].completedSentences = 0;
       }
 
       const finalPdfDoc = await PDFDocument.create();
@@ -585,10 +599,6 @@ export async function POST(req: NextRequest) {
             // 2. Extraer texto y traducir
             const pageText = await extractTextFromPdfPage(originalPdfDoc, pageIndex);
             const sentenceInfos = splitIntoSentences(pageText);
-
-            if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
-              global.translationProgress[sessionId].totalSentences += sentenceInfos.length;
-            }
 
             const sentencesToTranslate = sentenceInfos.map(info => sanitizeText(info.text));
             let translations: string[] = [];
@@ -709,6 +719,33 @@ export async function POST(req: NextRequest) {
       if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
         global.translationProgress[sessionId].status = partialError ? 'partial_error' : 'completed';
         global.translationProgress[sessionId].processedPages = pagesToProcess;
+      }
+
+      const processEndTime = Date.now(); // Captura el tiempo final
+      const durationMs = processEndTime - processStartTime;
+
+      const startTimeStr = new Date(processStartTime).toLocaleTimeString();
+      const endTimeStr = new Date(processEndTime).toLocaleTimeString();
+      const durationStr = formatDuration(durationMs);
+
+      try { // El bloque try ahora solo contiene la escritura en el PDF
+        const lastPageIndex = finalPdfDoc.getPageCount() - 1;
+        if (lastPageIndex >= 0) { // Asegurarse de que hay al menos una página
+          const lastPage = finalPdfDoc.getPage(lastPageIndex);
+          const { height } = lastPage.getSize();
+          lastPage.drawText(
+            `Procesado: ${startTimeStr} - ${endTimeStr} (${durationStr})${partialError ? ' (Interrumpido)' : ''}`,
+            {
+              x: 50,
+              y: 30, // Posición baja en la página
+              size: 8,
+              font: helvetica,
+              color: rgb(0.5, 0.5, 0.5),
+            }
+          );
+        }
+      } catch (drawError) {
+        console.warn("No se pudo añadir el tiempo de procesamiento al PDF:", drawError);
       }
 
       const finalPdfBytes: Uint8Array = await finalPdfDoc.save();
