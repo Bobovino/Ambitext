@@ -11,7 +11,7 @@ const availableLanguages = [
 ];
 
 const popularLanguages = [
-  "en", "es", "fr", "de", "it", "pt", "zh", "ja", "ru", "ar","ko"
+  "en", "es", "fr", "de", "it", "pt", "zh", "ja", "ru", "ar","ko","hi"
 ];
 
 const languageLabels: Record<string, { native: string; en: string }> = {
