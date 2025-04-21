@@ -122,7 +122,7 @@ export default function TranslationProgress({ sessionId, onComplete }: ProgressP
       {/* Mostrar advertencia sobre el modo limitado */}
       {progress.limitedMode && (
         <div className="bg-amber-500 bg-opacity-20 p-2 rounded text-sm text-amber-200 mb-2">
-          <p>Modo de desarrollo: Solo se están procesando {progress.processedPages} páginas 
+          <p>Modo de desarrollo: Solo se están procesando {process.env.NEXT_PUBLIC_MAX_PAGES} páginas 
           de un total de {progress.totalPdfPages}.</p>
         </div>
       )}
