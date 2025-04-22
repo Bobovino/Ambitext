@@ -336,6 +336,7 @@ export default function Translate() {
             <li>Procesamiento por frases</li>
             <li>Textos en colores diferentes para mejor lectura</li>
             <li>Seguimiento del progreso de la traducción en tiempo real</li>
+            <li>PASAR POR OCR ANTES DE TRADUCIR</li>
           </ul>
         </div>
 
