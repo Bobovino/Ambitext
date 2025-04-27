@@ -24,6 +24,8 @@ pnpm-debug.log*
 
 # Ignore all PDF files by default
 *.pdf
+*.epub
+*.mobi
 
 # But DO track PDF files inside the public/books directory
 !/public/books/*.pdf

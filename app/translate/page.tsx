@@ -11,7 +11,7 @@ const availableLanguages = [
 ];
 
 const popularLanguages = [
-  "en", "es", "fr", "de", "it", "pt", "zh", "ja", "ru", "ar","ko"
+  "en", "es", "fr", "de", "it", "pt", "zh", "ja", "ru", "ar","ko","hi"
 ];
 
 const languageLabels: Record<string, { native: string; en: string }> = {
@@ -336,6 +336,7 @@ export default function Translate() {
             <li>Procesamiento por frases</li>
             <li>Textos en colores diferentes para mejor lectura</li>
             <li>Seguimiento del progreso de la traducción en tiempo real</li>
+            <li>PASAR POR OCR ANTES DE TRADUCIR</li>
           </ul>
         </div>
 
