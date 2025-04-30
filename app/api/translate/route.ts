@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { writeFile, mkdir, readFile, unlink } from 'fs/promises'
 import { existsSync } from 'fs'
-import { PDFDocument, rgb, StandardFonts } from 'pdf-lib'
+import { PDFDocument, rgb, StandardFonts, PDFFont } from 'pdf-lib'
+import fontkit from '@pdf-lib/fontkit'
 import { join, parse } from 'path'
 import { getFileType, extractTextFromFile } from '../../../lib/fileProcessors'
 
@@ -13,7 +14,7 @@ interface ProgressState {
   currentPage: number; // Keep for estimation/display if needed
   totalBatches: number; // Added
   completedBatches: number; // Added
-  status: 'processing' | 'completed' | 'error' | 'partial_error'; // Added 'partial_error'
+  status: 'processing' | 'completed' | 'error' | 'partial_error'; 
   limitedMode?: boolean;
   processedPages?: number;
   totalPdfPages?: number;
@@ -258,12 +259,37 @@ function splitIntoSentences(text: string): SentenceInfo[] {
     let potentialSentences: string[] = matchResult ?? [trimmedParagraph]; // Si no hay match, el párrafo es una "frase"
     // --- FIN CORRECCIÓN ---
 
-    // Limpiar y filtrar frases vacías
-    potentialSentences = potentialSentences.map(s => s.trim()).filter(s => s.length > 0);
+    // --- MODIFICATION START: Post-process to merge fragments starting with punctuation ---
+    const mergedSentences: string[] = [];
+    if (potentialSentences.length > 0) {
+        // Add the first sentence, trimmed
+        const firstSentence = potentialSentences[0].trim();
+        if (firstSentence.length > 0) {
+            mergedSentences.push(firstSentence);
+        }
+
+        for (let i = 1; i < potentialSentences.length; i++) {
+            const currentSentence = potentialSentences[i].trim();
+            if (currentSentence.length === 0) continue; // Skip empty strings
+
+            // Check if the current sentence starts with punctuation that likely indicates it's a continuation
+            // and if there is a previous sentence to merge with.
+            if (currentSentence.match(/^[,;:](?=\s|$)/) && mergedSentences.length > 0) {
+                // Merge with the previous sentence
+                mergedSentences[mergedSentences.length - 1] += ` ${currentSentence}`;
+            } else {
+                // Otherwise, add it as a new sentence
+                mergedSentences.push(currentSentence);
+            }
+        }
+    }
+    // Update potentialSentences with merged and filtered results
+    potentialSentences = mergedSentences.filter(s => s.length > 0);
+    // --- MODIFICATION END ---
 
     if (potentialSentences.length > 0) {
       for (let i = 0; i < potentialSentences.length; i++) {
-        const sentence = potentialSentences[i];
+        const sentence = potentialSentences[i]; // Already trimmed
         const isLastInParagraph = (i === potentialSentences.length - 1);
 
         // Sub-dividir frases muy largas si es necesario, intentando no romper URLs
@@ -431,6 +457,37 @@ function formatDuration(ms: number): string {
 }
 // --- End Helper function ---
 
+// --- Helper function to fetch and validate font (Moved outside POST) ---
+async function fetchAndEmbedFont(
+  pdfDoc: PDFDocument,
+  fallbackFont: PDFFont,
+  url: string,
+  fontName: string
+): Promise<PDFFont> { // Using PDFFont type
+  try {
+    console.log(`Fetching font: ${fontName} from ${url}`);
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch ${fontName}: ${response.status} ${response.statusText}`);
+    }
+    const fontBytes = await response.arrayBuffer();
+    console.log(`Fetched ${fontName}, size: ${fontBytes.byteLength} bytes. Embedding...`);
+    if (fontBytes.byteLength < 1000) { // Basic sanity check for font size
+       console.warn(`Warning: Fetched font ${fontName} seems too small (${fontBytes.byteLength} bytes).`);
+    }
+    // --- MODIFICATION: Use pdfDoc passed as argument ---
+    const embeddedFont = await pdfDoc.embedFont(fontBytes);
+    console.log(`Embedded ${fontName} successfully.`);
+    return embeddedFont;
+  } catch (error) {
+    console.error(`Error processing font ${fontName}:`, error);
+    console.warn(`Falling back to fallback font for ${fontName}.`);
+    // --- MODIFICATION: Use fallbackFont passed as argument ---
+    return fallbackFont; // Fallback to the provided standard font
+  }
+}
+// --- End Helper function ---
+
 export async function POST(req: NextRequest) {
   const processStartTime = Date.now();
   let filePath: string | null = null;
@@ -529,6 +586,13 @@ export async function POST(req: NextRequest) {
 
       const finalPdfDoc = await PDFDocument.create();
 
+      // --- FIX: Register fontkit explicitly and ignore TS error ---
+      console.log('Registering fontkit...');
+      // @ts-ignore - Suppress TS error as registerFontkit should exist at runtime
+      finalPdfDoc.registerFontkit(fontkit);
+      console.log('Fontkit registered.');
+      // --- END FIX ---
+
       // 1. Portada original
       const [coverPage] = await finalPdfDoc.copyPages(originalPdfDoc, [0]);
       finalPdfDoc.addPage(coverPage);
@@ -546,19 +610,31 @@ export async function POST(req: NextRequest) {
       const helveticaOblique = await finalPdfDoc.embedFont(StandardFonts.HelveticaOblique);
       const helveticaBold = await finalPdfDoc.embedFont(StandardFonts.HelveticaBold);
 
+      // --- MODIFICATION: Change original font to EB Garamond, remove Merriweather ---
+      const ebGaramondFont = await fetchAndEmbedFont(finalPdfDoc, helvetica, 'https://fonts.gstatic.com/s/ebgaramond/v27/SlGDmQSNjdsmc35JDF1K5E55YMjF_7DPuGi-6_RkC49_S6w.ttf', 'EB Garamond');
+      const openSansFont = await fetchAndEmbedFont(finalPdfDoc, helvetica, 'https://fonts.gstatic.com/s/opensans/v34/memSYaGs126MiZpBA-UvWbX2vVnXBbObj2OVZyOOSr4dVJWUgsjZ0B4gaVc.ttf', 'Open Sans');
+
+      // --- MODIFICATION: Update font names for metadata and usage ---
+      const originalFontName = 'EB Garamond';
+      const translatedFontName = 'Open Sans';
+      const originalTextFont = ebGaramondFont; // Use EB Garamond
+      const translatedTextFont = openSansFont; // Keep Open Sans
+      // --- END MODIFICATION ---
+
       const sourceColor = rgb(0.1, 0.3, 0.6); // azul para el idioma origen
       const targetColor = rgb(0, 0, 0);       // negro para el idioma destino
 
+      // --- Metadata Page Styling Refinements ---
       metadataPage.drawText("Documento Traducido", { x: metaX, y: metaY, size: metaTitleSize, font: helveticaBold });
-      metaY -= metaLineHeight * 2;
+      metaY -= metaLineHeight * 2.5; // Increased spacing after title
       metadataPage.drawText(`Nombre original: ${originalFilename}`, { x: metaX, y: metaY, size: metaInfoSize, font: helvetica });
-      metaY -= metaLineHeight;
+      metaY -= metaLineHeight * 1.2; // Slightly increased spacing
       metadataPage.drawText(`Formato original: ${fileType.toUpperCase()}`, { x: metaX, y: metaY, size: metaInfoSize, font: helvetica });
-      metaY -= metaLineHeight;
+      metaY -= metaLineHeight * 1.2; // Slightly increased spacing
       metadataPage.drawText(`Fecha: ${new Date().toLocaleDateString()}`, { x: metaX, y: metaY, size: metaInfoSize, font: helvetica });
-      metaY -= metaLineHeight;
+      metaY -= metaLineHeight * 1.2; // Slightly increased spacing
 
-      metaY -= metaLineHeight * 1.5;
+      metaY -= metaLineHeight * 2; // Increased spacing before status
 
       let statusMessage = '';
       if (CONFIG.limitedMode && pagesToProcess < totalPages) {
@@ -567,16 +643,21 @@ export async function POST(req: NextRequest) {
         statusMessage = `Completo - Se han procesado las ${pagesToProcess} páginas.`;
       }
       metadataPage.drawText(statusMessage, { x: metaX, y: metaY, size: metaInfoSize, font: helveticaBold });
-      metaY -= metaLineHeight;
+      metaY -= metaLineHeight * 1.5; // Increased spacing after status
 
-      metaY -= metaLineHeight * 0.5;
       metadataPage.drawText(`Traducido con: ${translationProvider === 'easynmt' ? 'EasyNMT (Local)' : 'Hugging Face API'}`, { x: metaX, y: metaY, size: metaInfoSize, font: helvetica });
-      metaY -= metaLineHeight;
+      metaY -= metaLineHeight * 1.2; // Slightly increased spacing
       metadataPage.drawText(`Traducción: ${sourceLang.toUpperCase()} -> ${targetLang.toUpperCase()}`, { x: metaX, y: metaY, size: metaInfoSize, font: helvetica });
-      metaY -= metaLineHeight;
+      metaY -= metaLineHeight * 1.2; // Slightly increased spacing
+      metadataPage.drawText(`Fuente Original: ${originalFontName}`, { x: metaX, y: metaY, size: metaInfoSize, font: helvetica });
+      metaY -= metaLineHeight * 1.2; // Slightly increased spacing
+      metadataPage.drawText(`Fuente Traducción: ${translatedFontName}`, { x: metaX, y: metaY, size: metaInfoSize, font: helvetica });
+      metaY -= metaLineHeight * 2; // Increased spacing before legend
+
       metadataPage.drawText(`${sourceLang.toUpperCase()}: texto original (azul)`, { x: metaX, y: metaY, size: metaLegendSize, font: helveticaBold, color: sourceColor });
-      metaY -= metaLineHeight * 0.8;
+      metaY -= metaLineHeight; // Standard spacing for legend
       metadataPage.drawText(`${targetLang.toUpperCase()}: traducción (negro)`, { x: metaX, y: metaY, size: metaLegendSize, font: helveticaOblique, color: targetColor });
+      // --- End Metadata Page Styling Refinements ---
 
       const translatedPdfDir = join(process.cwd(), 'tests', 'batch_pipeline', 'pdfs_traducidos');
       await ensureDir(translatedPdfDir);
@@ -630,37 +711,58 @@ export async function POST(req: NextRequest) {
 
             // 3. Añadir tantas páginas de traducción como sean necesarias
             let translationPage = finalPdfDoc.addPage([595, 842]);
-            let y = 792;
+            let y = 792; // Start slightly lower from top
             const width = 595;
             const fontSize = 11;
-            const lineHeight = fontSize * 1.2;
+            const lineHeight = fontSize * 1.3; // Slightly increased line height
+            const pageMargin = 50;
+            const footerY = 35;
+            let currentPageNumber = 1; // For translated pages
+
+            // --- Function to add page number ---
+            const addPageNumber = (page: any, number: number) => {
+              page.drawText(`Página ${number}`, {
+                x: pageMargin,
+                y: footerY,
+                size: 9,
+                font: helvetica,
+                color: rgb(0.5, 0.5, 0.5),
+              });
+            };
+            addPageNumber(translationPage, currentPageNumber); // Add to first translation page
+            // --- End function ---
+
 
             const drawWrappedText = (text: string, options: any): { y: number, pageAdvanced: boolean } => {
               const safeText = sanitizeText(text);
-              const maxWidth = width - 100;
-              const textLineHeight = options.size * 1.2;
+              const maxWidth = width - (pageMargin * 2); // Use pageMargin
+              const textLineHeight = options.size * 1.3; // Match increased line height
               const words = safeText.split(' ');
               let line = '';
               let yPos = options.y;
               let pageAdvanced = false;
+              const currentFont = options.font;
 
               for (let n = 0; n < words.length; n++) {
                 const word = words[n];
                 const testLine = line + (line ? ' ' : '') + word;
                 let textWidth = 0;
                 try {
-                  textWidth = options.font.widthOfTextAtSize(testLine, options.size);
+                  textWidth = currentFont.widthOfTextAtSize(testLine, options.size);
                 } catch (e) {
-                  textWidth = line ? options.font.widthOfTextAtSize(line, options.size) : 0;
+                  console.warn(`Could not get width for "${testLine.substring(0,20)}..."`, e);
+                  textWidth = line ? currentFont.widthOfTextAtSize(line, options.size) : 0;
                 }
 
                 if (textWidth > maxWidth && line !== '') {
-                  translationPage.drawText(line, { ...options, y: yPos });
+                  translationPage.drawText(line, { ...options, y: yPos, font: currentFont, x: pageMargin }); // Use pageMargin
                   line = word;
                   yPos -= textLineHeight;
-                  if (yPos < 60) {
+                  if (yPos < (footerY + 30)) { // Check against footer position + buffer
                     translationPage = finalPdfDoc.addPage([595, 842]);
-                    yPos = 792;
+                    currentPageNumber++; // Increment page number
+                    addPageNumber(translationPage, currentPageNumber); // Add page number to new page
+                    yPos = 792; // Reset Y position
                     pageAdvanced = true;
                   }
                 } else {
@@ -668,38 +770,48 @@ export async function POST(req: NextRequest) {
                 }
               }
               if (line) {
-                translationPage.drawText(line, { ...options, y: yPos });
+                translationPage.drawText(line, { ...options, y: yPos, font: currentFont, x: pageMargin }); // Use pageMargin
               }
               return { y: yPos - textLineHeight, pageAdvanced };
             };
 
             for (let i = 0; i < sentenceInfos.length; i++) {
               const cleanOriginal = sanitizeText(sentenceInfos[i].text);
-              const cleanTranslation = sanitizeText(translations[i]);
-              const originalLines = Math.ceil(helveticaBold.widthOfTextAtSize(cleanOriginal, 11) / (width - 100));
-              const translationLines = Math.ceil(helveticaOblique.widthOfTextAtSize(cleanTranslation, 11) / (width - 100));
-              const linesNeeded = originalLines + translationLines;
-              const extraSpace = 5 + 15 + (sentenceInfos[i].isEndOfParagraph ? 10 : 0);
-              const totalHeightNeeded = linesNeeded * lineHeight + extraSpace;
+              const cleanTranslation = translations[i] ? sanitizeText(translations[i]) : "[Traducción no disponible]";
 
-              if (y - totalHeightNeeded < 60) {
+              // Estimate height needed (simplified, actual height depends on wrapping)
+              const originalLines = Math.ceil(originalTextFont.widthOfTextAtSize(cleanOriginal, fontSize) / (width - (pageMargin * 2)));
+              const translationLines = Math.ceil(translatedTextFont.widthOfTextAtSize(cleanTranslation, fontSize) / (width - (pageMargin * 2)));
+              const linesNeeded = originalLines + translationLines;
+              const spacingBetweenTexts = 8; // Increased spacing between original and translation
+              const spacingAfterPair = 20; // Increased spacing after the pair
+              const paragraphEndSpacing = sentenceInfos[i].isEndOfParagraph ? 12 : 0; // Extra space for paragraph end
+              const totalHeightNeeded = (linesNeeded * lineHeight) + spacingBetweenTexts + spacingAfterPair + paragraphEndSpacing;
+
+              if (y - totalHeightNeeded < (footerY + 30)) { // Check if content fits before footer
                 translationPage = finalPdfDoc.addPage([595, 842]);
-                y = 792;
+                currentPageNumber++;
+                addPageNumber(translationPage, currentPageNumber);
+                y = 792; // Reset Y
               }
 
-              // Frase original
-              let drawResult = drawWrappedText(cleanOriginal, { x: 50, y, size: 11, font: helveticaBold, color: sourceColor });
+              let drawResult = drawWrappedText(cleanOriginal, {
+                x: pageMargin, y, size: fontSize, font: originalTextFont, color: sourceColor
+              });
               y = drawResult.y;
 
-              y -= 5;
+              y -= spacingBetweenTexts; // Apply spacing
 
-              // Traducción
-              drawResult = drawWrappedText(cleanTranslation, { x: 50, y, size: 11, font: helveticaOblique, color: targetColor });
+              drawResult = drawWrappedText(cleanTranslation, {
+                x: pageMargin, y, size: fontSize, font: translatedTextFont, color: targetColor
+              });
               y = drawResult.y;
 
-              y -= 15;
+              y -= spacingAfterPair; // Apply spacing
 
-              if (sentenceInfos[i].isEndOfParagraph) y -= 10;
+              if (sentenceInfos[i].isEndOfParagraph) {
+                 y -= paragraphEndSpacing; // Apply extra paragraph spacing
+              }
 
               if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
                 global.translationProgress[sessionId].completedSentences += 1;
@@ -708,7 +820,7 @@ export async function POST(req: NextRequest) {
           } catch (pageError) {
             console.error(`Error traduciendo página ${pageIndex}:`, pageError);
             partialError = true;
-            break; // O puedes continuar con las siguientes páginas si prefieres
+            break;
           }
         }
       } catch (error) {
@@ -721,23 +833,23 @@ export async function POST(req: NextRequest) {
         global.translationProgress[sessionId].processedPages = pagesToProcess;
       }
 
-      const processEndTime = Date.now(); // Captura el tiempo final
+      const processEndTime = Date.now();
       const durationMs = processEndTime - processStartTime;
 
       const startTimeStr = new Date(processStartTime).toLocaleTimeString();
       const endTimeStr = new Date(processEndTime).toLocaleTimeString();
       const durationStr = formatDuration(durationMs);
 
-      try { // El bloque try ahora solo contiene la escritura en el PDF
+      try {
         const lastPageIndex = finalPdfDoc.getPageCount() - 1;
-        if (lastPageIndex >= 0) { // Asegurarse de que hay al menos una página
+        if (lastPageIndex >= 0) {
           const lastPage = finalPdfDoc.getPage(lastPageIndex);
           const { height } = lastPage.getSize();
           lastPage.drawText(
             `Procesado: ${startTimeStr} - ${endTimeStr} (${durationStr})${partialError ? ' (Interrumpido)' : ''}`,
             {
               x: 50,
-              y: 30, // Posición baja en la página
+              y: 30,
               size: 8,
               font: helvetica,
               color: rgb(0.5, 0.5, 0.5),
@@ -751,7 +863,6 @@ export async function POST(req: NextRequest) {
       const finalPdfBytes: Uint8Array = await finalPdfDoc.save();
       const finalPdfBuffer = Buffer.from(finalPdfBytes);
 
-      // --- Guardar PDF parcial/completo en tests/pdfs_traducidos ---
       const parsedOriginalFilename = parse(originalFilename);
       const outputFilenameBase = parsedOriginalFilename.name;
       const outputFilename = `${outputFilenameBase}${partialError ? '_partial' : ''}_translated.pdf`;
@@ -764,7 +875,7 @@ export async function POST(req: NextRequest) {
 
       console.log(`Devolviendo PDF traducido: ${outputFilename}`);
       return new NextResponse(finalPdfBuffer, {
-        status: partialError ? 206 : 200, // 206 Partial Content si hubo error
+        status: partialError ? 206 : 200,
         headers: {
           'Content-Type': 'application/pdf',
           'Content-Disposition': `attachment; filename="${outputFilename}"`,
