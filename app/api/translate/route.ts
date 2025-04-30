@@ -620,12 +620,13 @@ export async function POST(req: NextRequest) {
     const helveticaOblique = await finalPdfDoc.embedFont(StandardFonts.HelveticaOblique);
     const helveticaBold = await finalPdfDoc.embedFont(StandardFonts.HelveticaBold);
     const ebGaramondFont = await fetchAndEmbedFont(finalPdfDoc, helvetica, 'https://fonts.gstatic.com/s/ebgaramond/v27/SlGDmQSNjdsmc35JDF1K5E55YMjF_7DPuGi-6_RkC49_S6w.ttf', 'EB Garamond');
+    const ebGaramondItalicFont = await fetchAndEmbedFont(finalPdfDoc, helveticaOblique, 'https://fonts.gstatic.com/s/ebgaramond/v27/SlGFmQSNjdsmc35JDF1K5GRwSDw_OMg-6_RkC49_S6wNkQ.ttf', 'EB Garamond Italic');
     const openSansFont = await fetchAndEmbedFont(finalPdfDoc, helvetica, 'https://fonts.gstatic.com/s/opensans/v34/memSYaGs126MiZpBA-UvWbX2vVnXBbObj2OVZyOOSr4dVJWUgsjZ0B4gaVc.ttf', 'Open Sans');
-    const originalFontName = 'EB Garamond';
+    const originalFontName = 'EB Garamond Italic';
     const translatedFontName = 'Open Sans';
-    const originalTextFont = ebGaramondFont;
+    const originalTextFont = ebGaramondItalicFont;
     const translatedTextFont = openSansFont;
-    const sourceColor = rgb(0.1, 0.3, 0.6);
+    const sourceColor = rgb(0, 0, 0);
     const targetColor = rgb(0, 0, 0);
     // ... (actual drawing calls for metadata - same as before) ...
     metadataPage.drawText("Documento Traducido", { x: metaX, y: metaY, size: metaTitleSize, font: helveticaBold });
@@ -653,9 +654,9 @@ export async function POST(req: NextRequest) {
     metaY -= metaLineHeight * 1.2;
     metadataPage.drawText(`Fuente Traducción: ${translatedFontName}`, { x: metaX, y: metaY, size: metaInfoSize, font: helvetica });
     metaY -= metaLineHeight * 2;
-    metadataPage.drawText(`${sourceLang.toUpperCase()}: texto original (azul)`, { x: metaX, y: metaY, size: metaLegendSize, font: helveticaBold, color: sourceColor });
+    metadataPage.drawText(`${sourceLang.toUpperCase()}: texto original (${originalFontName})`, { x: metaX, y: metaY, size: metaLegendSize, font: helveticaBold, color: targetColor });
     metaY -= metaLineHeight;
-    metadataPage.drawText(`${targetLang.toUpperCase()}: traducción (negro)`, { x: metaX, y: metaY, size: metaLegendSize, font: helveticaOblique, color: targetColor });
+    metadataPage.drawText(`${targetLang.toUpperCase()}: traducción (${translatedFontName})`, { x: metaX, y: metaY, size: metaLegendSize, font: helvetica, color: targetColor });
 
 
     const translatedPdfDir = join(process.cwd(), 'tests', 'batch_pipeline', 'pdfs_traducidos');
@@ -774,10 +775,10 @@ export async function POST(req: NextRequest) {
         let translationPage = finalPdfDoc.addPage([595, 842]);
         let y = 792; // Top margin
         const width = 595;
-        const fontSize = 11;
-        const headingFontSize = 14;
-        const lineHeight = fontSize * 1.3;
-        const headingLineHeight = headingFontSize * 1.3;
+        const fontSize = 12;
+        const headingFontSize = 15;
+        const lineHeight = fontSize * 1.4;
+        const headingLineHeight = headingFontSize * 1.4;
         const pageMargin = 50;
         const footerY = 35;
         let currentPageNumber = 1; // Page number for the *translated* section of this original page
@@ -806,23 +807,18 @@ export async function POST(req: NextRequest) {
 
         // --- Updated drawWrappedText to use checkAddPage ---
         const drawWrappedText = (text: string, options: any): { y: number } => {
-            // --- MODIFICATION: Normalize spaces and trim before splitting ---
             const safeText = text.replace(/\s+/g, ' ').trim();
-            // --- END MODIFICATION ---
             if (!safeText || safeText.length === 0) return { y: options.y }; // Skip empty
 
             const maxWidth = width - (pageMargin * 2);
-            const textLineHeight = options.size * (options.lineHeightFactor || 1.3);
-            // --- MODIFICATION: Split normalized text ---
+            const textLineHeight = options.size * (options.lineHeightFactor || 1.4);
             const words = safeText.split(' ');
-            // --- END MODIFICATION ---
             let line = '';
             let yPos = options.y;
             const currentFont = options.font;
 
             for (let n = 0; n < words.length; n++) {
                 const word = words[n];
-                // Skip empty strings that might result from splitting multiple spaces
                 if (word.length === 0) continue;
                 const testLine = line + (line ? ' ' : '') + word;
                 let textWidth = 0;
@@ -871,38 +867,30 @@ export async function POST(req: NextRequest) {
 
                 for (let k = 0; k < block.sentences.length; k++) {
                     const sentence = block.sentences[k];
-                    // Text is already sanitized from splitParagraphIntoSentences
                     const cleanOriginal = sentence.text;
                     const cleanTranslation = sentence.translation || "[Traducción no disponible]";
 
-                    // Estimate height roughly for page check before drawing the pair
                     const originalLinesEst = Math.ceil(originalTextFont.widthOfTextAtSize(cleanOriginal, fontSize) / (width - (pageMargin * 2))) || 1;
                     const translationLinesEst = Math.ceil(translatedTextFont.widthOfTextAtSize(cleanTranslation, fontSize) / (width - (pageMargin * 2))) || 1;
                     const neededHeightEst = (originalLinesEst + translationLinesEst) * lineHeight + spacingBetweenTexts + spacingAfterPair;
-                    checkAddPage(neededHeightEst); // Check page before drawing pair
+                    checkAddPage(neededHeightEst);
 
-                    // Draw original
                     drawWrappedText(cleanOriginal, {
                         x: pageMargin, y, size: fontSize, font: originalTextFont, color: sourceColor
                     });
-                    // y is updated globally by drawWrappedText
 
-                    y -= spacingBetweenTexts; // Apply spacing
+                    y -= spacingBetweenTexts;
 
-                    // Draw translation
                     drawWrappedText(cleanTranslation, {
                         x: pageMargin, y, size: fontSize, font: translatedTextFont, color: targetColor
                     });
-                    // y is updated globally by drawWrappedText
 
-                    y -= spacingAfterPair; // Apply spacing
+                    y -= spacingAfterPair;
 
-                    // Update progress *after* rendering the pair
                     if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
                        global.translationProgress[sessionId].completedSentences += 1;
                     }
                 }
-                // Add paragraph end spacing after processing all sentences in the block
                 const paraEndNeeded = paragraphEndSpacing;
                 checkAddPage(paraEndNeeded);
                 y -= paraEndNeeded;
@@ -912,16 +900,13 @@ export async function POST(req: NextRequest) {
       } catch (pageError) {
         console.error(`Error procesando página ${pageIndex + 1}:`, pageError);
         partialError = true;
-        // Optionally add a placeholder page indicating the error for this page?
-        // For now, just log and continue if possible, or break if fatal
-        // break; // Uncomment to stop processing on first page error
       }
     } // --- End loop through pages ---
 
     // --- Finalize PDF ---
     if (sessionId && global.translationProgress && global.translationProgress[sessionId]) {
       global.translationProgress[sessionId].status = partialError ? 'partial_error' : 'completed';
-      global.translationProgress[sessionId].processedPages = pagesToProcess; // Mark how many were attempted
+      global.translationProgress[sessionId].processedPages = pagesToProcess;
     }
 
     const processEndTime = Date.now();
@@ -930,14 +915,13 @@ export async function POST(req: NextRequest) {
     const endTimeStr = new Date(processEndTime).toLocaleTimeString();
     const durationStr = formatDuration(durationMs);
 
-    // Add processing time to the last page
     try {
       const lastPageIndex = finalPdfDoc.getPageCount() - 1;
       if (lastPageIndex >= 0) {
         const lastPage = finalPdfDoc.getPage(lastPageIndex);
         lastPage.drawText(
           `Procesado: ${startTimeStr} - ${endTimeStr} (${durationStr})${partialError ? ' (Errores encontrados)' : ''}`,
-          { x: 50, y: 20, size: 8, font: helvetica, color: rgb(0.5, 0.5, 0.5) } // Lowered Y
+          { x: 50, y: 20, size: 8, font: helvetica, color: rgb(0.5, 0.5, 0.5) }
         );
       }
     } catch (drawError) {
@@ -948,7 +932,7 @@ export async function POST(req: NextRequest) {
     const finalPdfBuffer = Buffer.from(finalPdfBytes);
 
     const parsedOriginalFilename = parse(originalFilename);
-    const outputFilenameBase = parsedOriginalFilename.name.replace(/\s+/g, '_'); // Replace spaces
+    const outputFilenameBase = parsedOriginalFilename.name.replace(/\s+/g, '_');
     const outputFilename = `${outputFilenameBase}${partialError ? '_partial' : ''}_translated.pdf`;
     const outputPath = join(translatedPdfDir, outputFilename);
     await writeFile(outputPath, finalPdfBuffer);
@@ -959,7 +943,7 @@ export async function POST(req: NextRequest) {
 
     console.log(`Devolviendo PDF traducido: ${outputFilename}`);
     return new NextResponse(finalPdfBuffer, {
-      status: partialError ? 206 : 200, // 206 Partial Content if errors occurred
+      status: partialError ? 206 : 200,
       headers: {
         'Content-Type': 'application/pdf',
         'Content-Disposition': `attachment; filename="${outputFilename}"`,
