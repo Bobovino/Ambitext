@@ -236,13 +236,13 @@ async function translateWithHuggingFace(texts: string[], sourceLang: string, tar
 
 // --- Helper function to sanitize text for PDF rendering ---
 function sanitizeText(text: string): string {
-  // Remove common problematic control characters, including newline (\n) and carriage return (\r)
-  // Replace newlines/returns with spaces to prevent word merging.
-  // Allow basic Latin, accented characters, common punctuation, Cyrillic, Greek, etc.
-  // This is a basic filter; more complex filtering might be needed depending on content.
-  const cleanedText = text.replace(/[\r\n]+/g, ' '); // Replace newlines/returns with a single space
+  // Replace newlines/returns with a single space
+  const cleanedText = text.replace(/[\r\n]+/g, ' ');
+  // Remove other control characters
   // eslint-disable-next-line no-control-regex
-  return cleanedText.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, ''); // Remove other control characters
+  const noControlChars = cleanedText.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+  // Collapse multiple spaces into one and trim
+  return noControlChars.replace(/\s{2,}/g, ' ').trim();
 }
 // --- End sanitizeText ---
 
@@ -334,42 +334,60 @@ function splitBySpace(sentence: string, maxLength: number): string[] {
 
 function splitParagraphIntoSentences(paragraphText: string): SentenceInfo[] {
   const sentenceInfos: SentenceInfo[] = [];
+  // Trim initially to handle leading/trailing whitespace in the paragraph itself
   const trimmedParagraph = paragraphText.trim();
   if (trimmedParagraph.length === 0) return [];
 
   const urlRegex = /(https?:\/\/[^\s]+|[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/g;
+  // Regex adjusted slightly - less aggressive lookahead might help
   const sentenceRegex = /[^.!?…]+(?:[.!?…](?![.?!"”’']?\s*[a-zäöüß0-9])|\r?\n|$)+/g;
   const matchResult = trimmedParagraph.match(sentenceRegex);
   let potentialSentences: string[] = matchResult ?? [trimmedParagraph];
 
+  // Post-process to merge fragments
   const mergedSentences: string[] = [];
   if (potentialSentences.length > 0) {
-    const firstSentence = potentialSentences[0].trim();
+    // Sanitize and add the first sentence if not empty
+    const firstSentence = sanitizeText(potentialSentences[0]);
     if (firstSentence.length > 0) mergedSentences.push(firstSentence);
+
     for (let i = 1; i < potentialSentences.length; i++) {
-      const currentSentence = potentialSentences[i].trim();
-      if (currentSentence.length === 0) continue;
-      if ((currentSentence.match(/^[,;:](?=\s|$)/) || currentSentence.match(/^[a-zäöüß]/)) && mergedSentences.length > 0) {
-        const prevSentence = mergedSentences[mergedSentences.length - 1];
-        if (!prevSentence.match(/[.!?…]$/)) {
-          mergedSentences[mergedSentences.length - 1] += ` ${currentSentence}`;
-        } else {
-          mergedSentences.push(currentSentence);
+      // Sanitize the current potential sentence fragment
+      const currentSentence = sanitizeText(potentialSentences[i]);
+      if (currentSentence.length === 0) continue; // Skip empty strings after sanitizing
+
+      const prevSentence = mergedSentences.length > 0 ? mergedSentences[mergedSentences.length - 1] : null;
+      const startsWithContinuationPunct = currentSentence.match(/^[,;:](?=\s|$)/);
+      // Check if starts lowercase AND previous sentence exists and does NOT end with strong punctuation
+      const startsLowercaseAndPrevIncomplete = currentSentence.match(/^[a-zäöüß]/) && prevSentence && !prevSentence.match(/[.!?…]$/);
+
+      if (prevSentence && (startsWithContinuationPunct || startsLowercaseAndPrevIncomplete)) {
+        // --- MODIFICATION: Remove leading punctuation if present before merging ---
+        const textToAppend = startsWithContinuationPunct
+          ? currentSentence.substring(1).trim() // Remove leading punctuation and trim again
+          : currentSentence; // Already sanitized and trimmed
+
+        if (textToAppend.length > 0) { // Ensure there's something left to append
+            mergedSentences[mergedSentences.length - 1] += ` ${textToAppend}`;
         }
+        // --- END MODIFICATION ---
       } else {
+        // Otherwise, add it as a new sentence (already sanitized)
         mergedSentences.push(currentSentence);
       }
     }
   }
+  // Sentences are now sanitized and merged
   potentialSentences = mergedSentences.filter(s => s.length > 0);
 
+  // Split long sentences (Input sentences are already sanitized)
   for (const sentence of potentialSentences) {
-    const sanitizedSentence = sanitizeText(sentence);
-    if (sanitizedSentence.length > 250 && !urlRegex.test(sanitizedSentence)) {
-      const chunks = splitLongSentence(sanitizedSentence);
+    // No need to sanitize again here
+    if (sentence.length > 250 && !urlRegex.test(sentence)) {
+      const chunks = splitLongSentence(sentence); // splitLongSentence should handle trimming
       chunks.forEach(chunk => sentenceInfos.push({ text: chunk }));
-    } else if (sanitizedSentence.length > 0) {
-      sentenceInfos.push({ text: sanitizedSentence });
+    } else if (sentence.length > 0) {
+      sentenceInfos.push({ text: sentence });
     }
   }
   return sentenceInfos;
@@ -788,25 +806,31 @@ export async function POST(req: NextRequest) {
 
         // --- Updated drawWrappedText to use checkAddPage ---
         const drawWrappedText = (text: string, options: any): { y: number } => {
-            const safeText = text; // Already sanitized earlier
-            if (!safeText || safeText.trim().length === 0) return { y: options.y }; // Skip empty
+            // --- MODIFICATION: Normalize spaces and trim before splitting ---
+            const safeText = text.replace(/\s+/g, ' ').trim();
+            // --- END MODIFICATION ---
+            if (!safeText || safeText.length === 0) return { y: options.y }; // Skip empty
 
             const maxWidth = width - (pageMargin * 2);
-            const textLineHeight = options.size * (options.lineHeightFactor || 1.3); // Allow custom factor
+            const textLineHeight = options.size * (options.lineHeightFactor || 1.3);
+            // --- MODIFICATION: Split normalized text ---
             const words = safeText.split(' ');
+            // --- END MODIFICATION ---
             let line = '';
             let yPos = options.y;
             const currentFont = options.font;
 
             for (let n = 0; n < words.length; n++) {
                 const word = words[n];
+                // Skip empty strings that might result from splitting multiple spaces
+                if (word.length === 0) continue;
                 const testLine = line + (line ? ' ' : '') + word;
                 let textWidth = 0;
                 try { textWidth = currentFont.widthOfTextAtSize(testLine, options.size); }
                 catch (e) { textWidth = line ? currentFont.widthOfTextAtSize(line, options.size) : 0; }
 
                 if (textWidth > maxWidth && line !== '') {
-                    if (checkAddPage(textLineHeight)) yPos = y; // Update yPos if new page
+                    if (checkAddPage(textLineHeight)) yPos = y;
                     translationPage.drawText(line, { ...options, y: yPos, font: currentFont, x: pageMargin });
                     line = word;
                     yPos -= textLineHeight;
@@ -815,10 +839,10 @@ export async function POST(req: NextRequest) {
                 }
             }
             if (line) {
-                 if (checkAddPage(textLineHeight)) yPos = y; // Update yPos if new page
+                 if (checkAddPage(textLineHeight)) yPos = y;
                 translationPage.drawText(line, { ...options, y: yPos, font: currentFont, x: pageMargin });
             }
-             y = yPos - textLineHeight; // Update global y *after* drawing line(s)
+             y = yPos - textLineHeight;
             return { y: y };
         };
         // --- End Updated drawWrappedText ---
