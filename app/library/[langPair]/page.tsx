@@ -5,6 +5,10 @@ import { notFound } from 'next/navigation';
 import BookCarousel from '@/components/BookCarousel';
 import { getSupabaseClient } from '@/lib/supabaseClient';
 
+// --- Add this line to force dynamic rendering ---
+export const dynamic = 'force-dynamic';
+// ------------------------------------------------
+
 // Define valid language pairs for routing (can be fetched from DB later if needed)
 const validLangPairs = ['de-es', 'en-es'];
 
@@ -44,7 +48,7 @@ export default async function LanguageLibraryPage({ params }: { params: { langPa
 
   const pairName = getLanguagePairName(langPairUpper);
 
-  console.log(`[Library Page] Fetching books for languagePair: ${langPairUpper}`);
+  console.log(`[Library Page - Dynamic] Fetching books for languagePair: ${langPairUpper}`); // Added log marker
 
   // --- Explicitly select columns ---
   const { data: rawBooksData, error } = await supabase
@@ -54,7 +58,7 @@ export default async function LanguageLibraryPage({ params }: { params: { langPa
     .eq('languagePair', langPairUpper);
   // --- End explicit select ---
 
-  console.log('[Library Page] RAW data received from Supabase:', JSON.stringify(rawBooksData, null, 2));
+  console.log('[Library Page - Dynamic] RAW data received from Supabase:', JSON.stringify(rawBooksData, null, 2)); // Added log marker
 
   if (error) {
     console.error('[Library Page] Error fetching books:', error);
@@ -135,6 +139,11 @@ export default async function LanguageLibraryPage({ params }: { params: { langPa
           <h2 className="text-3xl font-semibold mb-12 text-center text-emerald-400">
             {pairName}
           </h2>
+
+          {/* Disclaimer about AI Translation */}
+          <p className="text-sm text-stone-400 text-center mb-12 max-w-3xl mx-auto">
+            Nota: Las traducciones disponibles en esta biblioteca se generaron utilizando herramientas de traducción automática (como EasyNMT) a partir de textos fuente de dominio público. Si bien se realizan esfuerzos para garantizar la precisión, las traducciones automáticas pueden contener errores o inconsistencias estilísticas. Se proporcionan con fines educativos y de conveniencia.
+          </p>
 
           {/* Iterate through levels and render carousels */}
           <div className="space-y-16">
