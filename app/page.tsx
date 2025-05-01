@@ -44,7 +44,7 @@ export default function HomePage() {
         )}
 
         {/* Translator Link Section */}
-        <div className="border-t border-stone-700/50 pt-10">
+        {/* <div className="border-t border-stone-700/50 pt-10">
           <h2 className="text-3xl font-semibold mb-6 text-stone-200">Traduce tus Documentos</h2>
           <p className="text-lg text-gray-400 mb-6">Sube un archivo PDF o EPUB para obtener una traducción.</p>
           <Link
@@ -54,7 +54,7 @@ export default function HomePage() {
             Ir al Traductor
           </Link>
         </div>
-
+ */}
       </div>
     </main>
   );
