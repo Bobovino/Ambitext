@@ -2,99 +2,134 @@ import Link from 'next/link';
 
 // Define la estructura de datos para un libro
 interface Book {
-  id: string; // Identificador único (puede ser el nombre base del archivo)
+  id: string; 
   title: string;
   author: string;
-  filename: string; // Nombre completo del archivo PDF en /public/books/
-  languagePair: string; // Ej: "DE-ES"
-  description?: string; // Opcional
+  filename: string; 
+  languagePair: string; 
+  level: 'A1' | 'A2' | 'B1' | 'B2' | 'C1' | 'C2'; // Added CEFR level
+  description?: string; 
 }
 
 // Lista de los libros traducidos disponibles
-// ¡¡RELLENA ESTO CON TUS 10 LIBROS!!
+// Levels are estimations - please adjust as needed!
 const availableBooks: Book[] = [
   {
-    id: 'goethe_werther', // ID único
-    title: 'Las penas del joven Werther', // Título en español
-    author: 'Johann Wolfgang von Goethe', // Autor
-    filename: 'Goethe_die_leiden_des_jungen_werther.pdf', // Nombre exacto del archivo en public/books
+    id: 'goethe_werther',
+    title: 'Las penas del joven Werther',
+    author: 'Johann Wolfgang von Goethe',
+    filename: 'Goethe_die_leiden_des_jungen_werther.pdf',
     languagePair: 'DE-ES',
+    level: 'C1', // Estimated level
     description: 'Un clásico del movimiento Sturm und Drang.'
   },
   {
-    id: 'durrenmatt_physiker', // ID único
+    id: 'durrenmatt_physiker',
     title: 'Los Físicos', 
-    author: 'Friedrich Dürrenmatt', // Autor (supuesto)
-    filename: 'Die Physiker traducido.pdf', // Nombre exacto del archivo en public/books
+    author: 'Friedrich Dürrenmatt',
+    filename: 'Die Physiker traducido.pdf',
     languagePair: 'DE-ES',
-    description: 'Una comedia grotesca sobre ciencia y responsabilidad.' // Descripción (supuesta)
+    level: 'B2', // Estimated level
+    description: 'Una comedia grotesca sobre ciencia y responsabilidad.'
   },
   {
-    id: 'kastner_emil', // ID único
-    title: 'Emilio y los detectives', // Título en español (supuesto)
-    author: 'Erich Kästner', // Autor (supuesto)
-    filename: 'Emil und die Detektive traducido.pdf', // Nombre exacto del archivo en public/books
+    id: 'kastner_emil',
+    title: 'Emilio y los detectives',
+    author: 'Erich Kästner',
+    filename: 'Emil und die Detektive traducido.pdf',
     languagePair: 'DE-ES',
-    description: 'Un clásico de la literatura infantil alemana.' // Descripción (supuesta)
+    level: 'A2', // Estimated level
+    description: 'Un clásico de la literatura infantil alemana.'
   },
-  // --- Añade aquí los otros 7 libros cuando los tengas ---
+  // --- Añade aquí los otros libros con su nivel estimado ---
   // Ejemplo:
   // {
   //   id: 'kafka_verwandlung',
   //   title: 'La Metamorfosis',
   //   author: 'Franz Kafka',
-  //   filename: 'Kafka_die_verwandlung_translated.pdf', // Asegúrate que el nombre del archivo es correcto
+  //   filename: 'Kafka_die_verwandlung_translated.pdf',
   //   languagePair: 'DE-ES',
+  //   level: 'B2', // Estimated level
   //   description: 'La inquietante historia de Gregorio Samsa.'
   // },
-  // ... (otros 6 libros)
 ];
 
+// Define the order of levels
+const cefrLevels: Book['level'][] = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
+
 export default function BooksPage() {
+  // Group books by level
+  const booksByLevel = availableBooks.reduce((acc, book) => {
+    if (!acc[book.level]) {
+      acc[book.level] = [];
+    }
+    acc[book.level].push(book);
+    return acc;
+  }, {} as Record<Book['level'], Book[]>);
+
   return (
-    <main className="flex min-h-screen flex-col items-center p-6 md:p-12 bg-background text-foreground">
-      <div className="w-full max-w-4xl">
-        <h1 className="text-4xl font-bold mb-4 text-center text-stone-200">
+    <main className="flex min-h-screen flex-col items-center p-6 md:p-12 bg-gradient-to-b from-stone-900 to-black text-foreground">
+      <div className="w-full max-w-6xl"> {/* Increased max-width for potentially wider rows */}
+        <h1 className="text-5xl font-bold mb-4 text-center text-stone-100">
           Biblioteca Bilingüe
         </h1>
-        <p className="text-lg text-gray-300 mb-8 text-center">
-          Descarga libros clásicos con traducción Alemán-Español frase a frase.
+        <p className="text-xl text-gray-300 mb-12 text-center"> {/* Increased margin */}
+          Descarga libros clásicos por nivel (A1-C2) con traducción Alemán-Español frase a frase.
         </p>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 bg-[#333333] p-6 rounded-lg shadow-lg min-h-[80dvh] ">
-          {availableBooks.length > 0 ? (
-            availableBooks.map((book) => (
-              <div
-                key={book.id}
-                className="bg-stone-800 rounded-lg shadow-lg p-6 flex flex-col justify-between border border-stone-900 h-[28dvh]"
-              >
-                <div>
-                  <h2 className="text-xl font-semibold mb-1 text-stone-100">{book.title}</h2>
-                  <p className="text-sm text-stone-400 mb-3">{book.author}</p>
-                  <p className="text-sm text-stone-300 mb-4">{book.description || 'Traducción bilingüe frase a frase.'}</p>
+        {/* Iterate through levels and render sections */}
+        <div className="space-y-12"> {/* Add space between level sections */}
+          {cefrLevels.map((level) => {
+            const books = booksByLevel[level];
+            if (!books || books.length === 0) {
+              // Optionally render something if a level has no books, or just skip
+              // return (
+              //   <div key={level}>
+              //     <h2 className="text-3xl font-semibold mb-4 text-stone-300 border-b border-stone-700 pb-2">Nivel {level}</h2>
+              //     <p className="text-stone-400 italic">No hay libros disponibles para este nivel todavía.</p>
+              //   </div>
+              // );
+              return null; // Skip rendering if no books for this level
+            }
+
+            return (
+              <section key={level} aria-labelledby={`level-${level}-heading`}>
+                <h2 id={`level-${level}-heading`} className="text-3xl font-semibold mb-5 text-stone-200 border-b border-stone-700 pb-2">
+                  Nivel {level}
+                </h2>
+                {/* Use a grid for the books within the level row */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+                  {books.map((book) => (
+                    <div
+                      key={book.id}
+                      className="bg-stone-800/60 rounded-lg shadow-lg overflow-hidden flex flex-col p-5 border border-stone-700/50 transition duration-300 ease-in-out hover:bg-stone-700/70 hover:shadow-xl"
+                    >
+                      <div className="flex flex-col flex-grow">
+                        <h3 className="text-lg font-semibold mb-1 text-stone-100">{book.title}</h3>
+                        <p className="text-sm text-stone-400 mb-2">{book.author}</p>
+                        <p className="text-xs text-stone-300 mb-3 flex-grow">{book.description || 'Traducción bilingüe frase a frase.'}</p>
+                        <a
+                          href={`/books/${book.filename}`}
+                          download={book.filename}
+                          className="block w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2 px-3 rounded mt-auto text-center text-sm transition duration-150 ease-in-out self-end"
+                          aria-label={`Descargar ${book.title}`}
+                        >
+                          Descargar
+                        </a>
+                      </div>
+                    </div>
+                  ))}
                 </div>
-                <a
-                  href={`/books/${book.filename}`}
-                  download={book.filename}
-                  className="bg-stone-600 hover:bg-stone-700 text-stone-100 font-bold py-2 px-4 rounded mt-4 text-center transition duration-150 ease-in-out"
-                  aria-label={`Descargar ${book.title}`}
-                >
-                  Descargar {/* ({book.languagePair}) */}
-                </a>
-              </div>
-            ))
-          ) : (
-            <p className="text-center text-muted-foreground md:col-span-2 lg:col-span-3">
-              No hay libros disponibles en este momento.
-            </p>
-          )}
+              </section>
+            );
+          })}
         </div>
 
-{/*         <div className="mt-12 text-center">
-          <Link href="/translate" className="text-accent hover:underline">
-            ¿Quieres traducir tu propio documento? Prueba el traductor.
-          </Link>
-        </div> */}
+        {availableBooks.length === 0 && (
+           <p className="text-center text-muted-foreground mt-10">
+              No hay libros disponibles en este momento.
+            </p>
+        )}
       </div>
     </main>
   );
