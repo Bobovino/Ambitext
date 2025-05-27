@@ -627,7 +627,7 @@ export async function POST(req: NextRequest) {
     const originalTextFont = ebGaramondItalicFont;
     const translatedTextFont = openSansFont;
     const sourceColor = rgb(0, 0, 0);
-    const targetColor = rgb(0, 0, 0);
+    const targetColor = rgb(0.427, 0.427, 0.427); // #6D6D6D
     // ... (actual drawing calls for metadata - same as before) ...
     metadataPage.drawText("Documento Traducido", { x: metaX, y: metaY, size: metaTitleSize, font: helveticaBold });
     metaY -= metaLineHeight * 2.5;
