@@ -44,3 +44,5 @@ env/
 uv.lock
 pyproject.toml
 .pytest_cache/
+
+easynmt-models/
