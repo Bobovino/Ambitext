@@ -29,3 +29,18 @@ pnpm-debug.log*
 
 # But DO track PDF files inside the public/books directory
 !/public/books/*.pdf
+
+# Python / uv files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+.uv/
+uv.lock
+pyproject.toml
+.pytest_cache/

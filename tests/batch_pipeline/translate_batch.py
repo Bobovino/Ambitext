@@ -1,8 +1,8 @@
 import os
 import requests
 
-SOURCE_LANG = "de"
-TARGET_LANG = "es"
+SOURCE_LANG = "es"
+TARGET_LANG = "de"
 # Cambia el puerto si es necesario
 API_URL = "http://localhost:3000/api/translate"
 
@@ -23,6 +23,7 @@ for filename in os.listdir(INPUT_DIR):
             "targetLang": TARGET_LANG,
             "sessionId": filename  # Puedes usar el nombre como sessionId
         }
+        print(f"Enviando datos: {data}")  # Add this debug line
         resp = requests.post(API_URL, files=files, data=data)
         if resp.status_code == 200:
             outname = f"{os.path.splitext(filename)[0]}_{SOURCE_LANG}_a_{TARGET_LANG}.pdf"
