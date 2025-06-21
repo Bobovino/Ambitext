@@ -54,5 +54,5 @@ pnpm run dev
 
 # Para traducir varios libros a la vez
 
-Ejecutar OJO A LOS IDIOMAS!!!!!!!!
+Al Ejecutar, OJO A LOS IDIOMAS!!!!!!!!
 python/uv run translate_batch.py
